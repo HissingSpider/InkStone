@@ -167,7 +167,23 @@ To take a note over permanently, add this to its frontmatter:
 inkstone_lock: true
 ```
 
-A locked note is never touched again, `--force` included.
+A locked note is never modified again, `--force` included. Later transcriptions
+of that topic still land beside it as a sidecar rather than being discarded —
+adopting a note should not mean losing every page you write on it afterwards. If
+the transcription is already present in the note, no sidecar is written at all.
+
+### Merging into notes you already have
+
+If you already keep notes on a topic, point Inkstone at the file you already have
+instead of letting it write a second one beside yours:
+
+```json
+{ "notebookRouting": { "Vectors": "" } }
+```
+
+An empty destination means the vault root. Merge the transcription into your note
+however you like, add `inkstone_lock: true`, and Inkstone will leave it alone
+from then on and will not recreate a duplicate elsewhere.
 
 ---
 

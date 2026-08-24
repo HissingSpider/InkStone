@@ -8,13 +8,14 @@ public enum WriteOutcome: Sendable, Equatable {
     /// A human edited the note (or it predates Inkstone). The transcription was
     /// written beside it instead, at `sidecar`.
     case protected(note: URL, sidecar: URL, reason: String)
-    /// The note is pinned with `inkstone_lock: true`.
-    case locked(URL)
+    /// The note is pinned with `inkstone_lock: true`. The new transcription was
+    /// written to `sidecar` so later pages are not silently discarded.
+    case locked(note: URL, sidecar: URL)
 
     public var url: URL {
         switch self {
-        case .created(let u), .updated(let u), .unchanged(let u), .locked(let u): return u
-        case .protected(let note, _, _): return note
+        case .created(let u), .updated(let u), .unchanged(let u): return u
+        case .protected(let note, _, _), .locked(let note, _): return note
         }
     }
 
@@ -68,9 +69,19 @@ public struct VaultWriter: Sendable {
 
         // An explicit lock wins over everything, including --force: it is the
         // user saying "this note is mine now".
+        //
+        // The note itself is never modified, but the transcription still lands
+        // beside it. Adopting a note should not mean quietly throwing away every
+        // page you write on that topic afterwards.
         if let block = Frontmatter.split(existing).frontmatter,
            Frontmatter.value(of: "inkstone_lock", in: block) == "true" {
-            return .locked(url)
+            let contents = note.contents
+            if existing.contains(note.body.trimmingCharacters(in: .whitespacesAndNewlines)),
+               !note.body.isEmpty {
+                // Already merged in; no need for a sidecar at all.
+                return .locked(note: url, sidecar: url)
+            }
+            return .locked(note: url, sidecar: try writeSidecar(contents, beside: url))
         }
 
         // Carry the original creation date forward so re-runs do not make every

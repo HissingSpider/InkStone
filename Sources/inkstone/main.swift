@@ -89,6 +89,10 @@ func commandRun() async throws {
             ? Output.green(result.summaryLine)
             : Output.yellow(result.summaryLine))
         for outcome in result.outcomes {
+            if case .locked(let note, let sidecar) = outcome, note != sidecar {
+                Output.print(Output.dim("  locked: \(note.lastPathComponent) — new material "
+                                        + "in \(sidecar.lastPathComponent)"))
+            }
             if case .protected(let note, let sidecar, let reason) = outcome {
                 Output.print(Output.yellow("  protected: \(note.lastPathComponent) — \(reason)"))
                 Output.print(Output.dim("             transcription written to \(sidecar.path)"))

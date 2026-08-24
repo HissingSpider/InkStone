@@ -171,8 +171,13 @@ public final class Pipeline: @unchecked Sendable {
             case .created(let url): log.info("created \(url.lastPathComponent)")
             case .updated(let url): log.info("updated \(url.lastPathComponent)")
             case .unchanged: break
-            case .locked(let url):
-                log.info("locked, left alone: \(url.lastPathComponent)")
+            case .locked(let url, let sidecar):
+                if sidecar == url {
+                    log.info("locked and already merged: \(url.lastPathComponent)")
+                } else {
+                    log.info("locked, left alone: \(url.lastPathComponent) "
+                             + "(new material in \(sidecar.lastPathComponent))")
+                }
             case .protected(let note, let sidecar, let reason):
                 log.warn("\(note.lastPathComponent) \(reason); wrote \(sidecar.lastPathComponent)")
             }

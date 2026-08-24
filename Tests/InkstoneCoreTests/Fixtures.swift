@@ -41,9 +41,12 @@ enum Fixtures {
     private static func draw(_ page: PageSpec, in context: CGContext) {
         var y = pageSize.height - 90
         for line in page.lines {
-            // Large type: Vision needs a decent glyph height to read reliably,
-            // and the markdown heuristics key off relative line height anyway.
-            let size: CGFloat = line.hasPrefix("#") ? 34 : 24
+            // Large type: Vision needs a decent glyph height to read reliably.
+            // The heading is well clear of the body size because Vision measures
+            // the glyph box, not the font size — a body line with ascenders and
+            // descenders is proportionally taller than its point size suggests,
+            // which squeezes the ratio the heading heuristic keys on.
+            let size: CGFloat = line.hasPrefix("#") ? 48 : 22
             let text = line.hasPrefix("#")
                 ? String(line.dropFirst()).trimmingCharacters(in: .whitespaces) : line
             drawText(text, at: CGPoint(x: 72, y: y), size: size, in: context)

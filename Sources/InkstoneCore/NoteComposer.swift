@@ -298,8 +298,9 @@ public struct NoteComposer: Sendable {
             footer += "\n> Some of this page was hard to read and may be wrong."
         }
 
+        let name = Self.safeFileName(notebook)
         return ComposedNote(
-            relativePath: "\(folder)/\(Self.safeFileName(notebook)).md",
+            relativePath: folder.isEmpty ? "\(name).md" : "\(folder)/\(name).md",
             body: sections.joined(separator: "\n\n---\n\n"),
             frontmatter: frontmatter,
             footer: footer,

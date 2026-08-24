@@ -161,6 +161,13 @@ struct EndToEndTests {
 
             #expect(result.notesSkipped == 1)
             #expect(try String(contentsOf: note, encoding: .utf8) == locked)
+
+            // The note is untouched, but the new transcription is not thrown
+            // away — adopting a note should not mean losing every page you
+            // write on that topic afterwards.
+            let sidecar = config.notesURL.appendingPathComponent("Pinned.inkstone-new.md")
+            #expect(FileManager.default.fileExists(atPath: sidecar.path))
+            #expect(try String(contentsOf: sidecar, encoding: .utf8).contains("New content"))
         }
     }
 
@@ -582,5 +589,72 @@ struct FrontmatterAccretionTests {
 
         let rewritten = try String(contentsOf: note, encoding: .utf8)
         #expect(!rewritten.contains("created:"), "\(rewritten)")
+    }
+}
+
+@Suite("Merging into your own notes", .serialized)
+struct MergedNoteTests {
+
+    /// The workflow for a vault that already has hand-written notes: route the
+    /// generated note onto the existing file, merge the transcription in by
+    /// hand, and lock it. From then on Inkstone must leave it completely alone
+    /// and must not recreate a duplicate elsewhere.
+    @Test("A merged, locked note is left alone and no duplicate reappears")
+    func mergedNotesStayMerged() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("inkstone-merge-\(UUID().uuidString)")
+        let inbox = root.appendingPathComponent("Inbox")
+        let vault = root.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = InkstoneConfig.default
+        config.inboxPath = inbox.path
+        config.vaultPath = vault.path
+        config.renderDPI = 150
+        config.granularity = "section"
+        // An empty destination means the vault root, where the user's own notes
+        // live, rather than a path beginning with a slash.
+        config.notebookRouting = ["Vectors": ""]
+
+        // Enough body lines that the heading is genuinely taller than the
+        // median, which is what the section heuristic keys on.
+        try Fixtures.makePDF(at: inbox.appendingPathComponent("Calculus.pdf"), title: "Calculus",
+                             pages: [.init(lines: ["#Vectors", "length and direction",
+                                                   "an ordered tuple of numbers",
+                                                   "equal when both agree"])])
+        let state = try StateStore(url: root.appendingPathComponent("state.sqlite3"))
+
+        var options = PipelineOptions()
+        options.granularity = .section
+        _ = await Pipeline(config: config, state: state, options: options).run()
+
+        // Routed to the vault root, not into a subfolder.
+        let note = vault.appendingPathComponent("Vectors.md")
+        let produced = (try? FileManager.default.subpathsOfDirectory(atPath: vault.path)) ?? []
+        #expect(FileManager.default.fileExists(atPath: note.path), "produced: \(produced)")
+
+        // The user merges and locks it.
+        let merged = """
+            ---
+            inkstone_lock: true
+            ---
+
+            My own definition of a vector.
+
+            ## From my handwriting
+
+            length and direction
+            """
+        try merged.write(to: note, atomically: true, encoding: .utf8)
+
+        let second = await Pipeline(config: config, state: state, options: options).run()
+
+        #expect(try String(contentsOf: note, encoding: .utf8) == merged, "the note was modified")
+        #expect(second.notesWritten == 0)
+        // And nothing reappeared under the default notes folder.
+        #expect(!FileManager.default.fileExists(
+            atPath: config.notesURL.appendingPathComponent("Calculus/Vectors.md").path))
     }
 }
