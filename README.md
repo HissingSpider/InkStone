@@ -172,7 +172,56 @@ shorthand.
 | `inkstone reset` | Forget cached hashes so the next run redoes everything |
 
 Useful flags: `--dry-run` (write nothing), `--all` (ignore caches), `--file`
-(one notebook), `--force` (overwrite hand-edited notes), `--verbose`.
+(one notebook), `--force` (overwrite hand-edited notes), `--verbose`,
+`--granularity notebook|page|section`.
+
+---
+
+## Several subjects in one notebook
+
+Handwriting apps cap how many notebooks you get, so one book often ends up
+holding several unrelated things. `--granularity section` splits it back apart:
+
+```bash
+inkstone run --granularity section
+```
+
+A new section starts at any page whose first line is a heading. Everything
+until the next heading belongs to it, and pages before the first heading stay
+together under the notebook's own name so nothing is orphaned.
+
+Each section becomes its own note, categorised:
+
+```yaml
+title: Vectors
+category: Vectors
+notebook: Calculus
+source_pages: [2, 3]
+tags: [inkstone, handwritten, vectors]
+```
+
+`notebookRouting` matches section names too, so a rule sends a subject to its
+own folder wherever you happen to have written it:
+
+```json
+{ "notebookRouting": { "Vectors": "Courses/Linear Algebra" } }
+```
+
+Unrouted sections nest under their notebook — `Inkstone/Calculus/Vectors.md` —
+so two notebooks can both contain a "Standup" without overwriting each other.
+
+Then in Obsidian:
+
+````
+```dataview
+TABLE category, notebook, quality FROM #inkstone WHERE category
+GROUP BY category
+```
+````
+
+A caveat worth knowing: section names come from OCR. If Vision misreads a
+heading you get a note called `Vector operating` instead of `Vector
+operations`. Cloud escalation fixes the headings along with everything else.
 
 ---
 
@@ -198,7 +247,7 @@ to defaults, so a config written by an older version keeps working.
 | `diagramExtractionEnabled` | `true` | Crop drawings out as PNGs |
 | `minDiagramAreaFraction` | `0.01` | Share of a page a drawing must cover |
 | `diagramCropPadding` | `12` | Pixels of breathing room around a crop |
-| `notebookRouting` | `{}` | `{"Physics 201": "Courses/Physics"}` — prefix match |
+| `notebookRouting` | `{}` | `{"Physics 201": "Courses/Physics"}` — matches notebook *and* section names, prefix match |
 | `defaultTags` | `["inkstone", "handwritten"]` | Added to every note |
 
 ---

@@ -21,7 +21,7 @@ public enum Frontmatter {
     /// new field never silently reorders an existing note and makes a spurious
     /// diff in the user's vault history.
     static let keyOrder = [
-        "title", "source", "pages", "created", "updated",
+        "title", "category", "notebook", "source", "pages", "source_pages", "created", "updated",
         "transcriber", "ocr", "quality", "needs_review",
         "low_confidence_pages", "tags",
     ]

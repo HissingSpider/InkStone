@@ -8,6 +8,23 @@ public enum NoteGranularity: String, Codable, Sendable {
     /// One note per page. Better for very long notebooks and for people who
     /// link to individual pages.
     case page
+    /// One note per section, where a section starts at a page whose first line
+    /// is a heading.
+    ///
+    /// This is the mode for people whose notebook count is capped and who
+    /// therefore keep several subjects in one book. It turns a catch-all
+    /// notebook back into properly named, properly routed, individually
+    /// categorised notes.
+    case section
+}
+
+/// A run of consecutive pages sharing one heading.
+struct Section {
+    var title: String
+    var pages: [PageOutput]
+    /// True when the title came from a real heading rather than a fallback to
+    /// the notebook name, which is what makes it worth routing and tagging on.
+    var isExplicit: Bool
 }
 
 /// One finished page, ready to be assembled into a note.
@@ -97,6 +114,7 @@ public struct NoteComposer: Sendable {
         case .notebook:
             return [composeSingle(notebook: notebook, folder: folder, sourceURL: sourceURL,
                                   pages: pages, now: now)]
+
         case .page:
             return pages.map { page in
                 composeSingle(
@@ -105,7 +123,101 @@ public struct NoteComposer: Sendable {
                     sourceURL: sourceURL, pages: [page], now: now,
                     includePageHeadings: false)
             }
+
+        case .section:
+            var used: Set<String> = []
+            return Self.sections(in: pages, fallbackTitle: notebook).map { section in
+                // An explicit heading may have its own routing rule; that is the
+                // point of the mode, so it wins over the notebook's rule. Without
+                // one, notes nest under the notebook so two books cannot both
+                // claim "Vectors.md" and overwrite each other every run.
+                let destination = section.isExplicit
+                    ? routeIfMatched(section.title)
+                        ?? folder.appending("/\(Self.safeFileName(notebook))")
+                    : folder.appending("/\(Self.safeFileName(notebook))")
+
+                var note = composeSingle(
+                    notebook: section.title, folder: destination, sourceURL: sourceURL,
+                    pages: section.pages, now: now,
+                    includePageHeadings: section.pages.count > 1)
+
+                note.frontmatter["notebook"] = .string(notebook)
+                note.frontmatter["source_pages"] = .intList(section.pages.map { $0.pageIndex + 1 })
+                if section.isExplicit {
+                    note.frontmatter["category"] = .string(section.title)
+                    // Tagging as well as a field: a field is queryable, a tag is
+                    // clickable, and Obsidian users reach for both.
+                    note.frontmatter["tags"] = .list(config.defaultTags + [Self.slug(section.title)])
+                }
+                note.relativePath = Self.deduplicate(note.relativePath, against: &used)
+                return note
+            }
         }
+    }
+
+    // MARK: Sections
+
+    /// Splits `pages` into runs that each begin with a heading page.
+    ///
+    /// Pages before the first heading become a leading section named after the
+    /// notebook, so nothing is ever dropped for want of a title.
+    static func sections(in pages: [PageOutput], fallbackTitle: String) -> [Section] {
+        var sections: [Section] = []
+
+        for page in pages {
+            if let title = sectionTitle(of: page.markdown) {
+                sections.append(Section(title: title, pages: [page], isExplicit: true))
+            } else if sections.isEmpty {
+                sections.append(Section(title: fallbackTitle, pages: [page], isExplicit: false))
+            } else {
+                sections[sections.count - 1].pages.append(page)
+            }
+        }
+        return sections
+    }
+
+    /// The heading a page opens with, if it opens with one.
+    ///
+    /// Reads the finished markdown rather than the raw OCR lines, which means it
+    /// works identically for locally recognised pages and for cloud-transcribed
+    /// ones, and costs nothing for a cached page because the markdown is already
+    /// stored.
+    static func sectionTitle(of markdown: String) -> String? {
+        guard let first = markdown
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        else { return nil }
+
+        let line = first.trimmingCharacters(in: .whitespaces)
+        guard line.hasPrefix("#") else { return nil }
+
+        let title = line.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+
+        // A title is short and has words in it. These filters keep a long
+        // sentence that merely happens to be written large, or a smear of OCR
+        // punctuation, from becoming a note name.
+        guard title.count >= 3, title.count <= 60 else { return nil }
+        guard title.split(separator: " ").count <= 6 else { return nil }
+        guard title.contains(where: \.isLetter) else { return nil }
+        return title
+    }
+
+    /// Ensures each note in a run gets its own path, since a notebook can
+    /// legitimately carry the same heading twice.
+    static func deduplicate(_ path: String, against used: inout Set<String>) -> String {
+        guard used.contains(path) else {
+            used.insert(path)
+            return path
+        }
+        let base = String(path.dropLast(3))
+        for suffix in 2...99 {
+            let candidate = "\(base) (\(suffix)).md"
+            if !used.contains(candidate) {
+                used.insert(candidate)
+                return candidate
+            }
+        }
+        return path
     }
 
     private func composeSingle(
@@ -225,12 +337,23 @@ public struct NoteComposer: Sendable {
     /// Matching is case-insensitive and accepts a prefix, so a rule for
     /// "Physics 201" catches "Physics 201 - Term 2.pdf" too.
     public func route(notebook: String) -> String {
-        let needle = notebook.lowercased()
-        for (pattern, destination) in config.notebookRouting
-        where needle == pattern.lowercased() || needle.hasPrefix(pattern.lowercased()) {
+        routeIfMatched(notebook) ?? config.notesSubfolder
+    }
+
+    /// The configured destination for `name`, or nil when no rule matches.
+    ///
+    /// Separate from `route` because a section title that matches no rule must
+    /// fall back to nesting under its notebook, not to the vault's default
+    /// folder — otherwise every unrouted section from every notebook would pile
+    /// into one directory.
+    func routeIfMatched(_ name: String) -> String? {
+        let needle = name.lowercased()
+        for (pattern, destination) in config.notebookRouting.sorted(by: { $0.key > $1.key })
+        where !pattern.isEmpty
+            && (needle == pattern.lowercased() || needle.hasPrefix(pattern.lowercased())) {
             return destination.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         }
-        return config.notesSubfolder
+        return nil
     }
 
     // MARK: Names
@@ -242,7 +365,10 @@ public struct NoteComposer: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let collapsed = cleaned.replacingOccurrences(
             of: " +", with: " ", options: .regularExpression)
-        return collapsed.isEmpty ? "Untitled" : String(collapsed.prefix(120))
+        // Trailing dots would give "Vector operations..md", and a leading dot
+        // would hide the note from Finder and from Obsidian's file list.
+        let trimmed = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return trimmed.isEmpty ? "Untitled" : String(trimmed.prefix(120))
     }
 
     /// Lowercase, hyphenated identifier used for attachment file names.

@@ -269,6 +269,11 @@ struct NoteComposerTests {
     @Test func fileNamesAreVaultSafe() {
         #expect(NoteComposer.safeFileName("A/B:C*D?") == "A-B-C-D-")
         #expect(NoteComposer.safeFileName("   ") == "Untitled")
+        // A heading OCR'd with a trailing full stop must not yield "Name..md",
+        // and a leading dot must not hide the note from Obsidian.
+        #expect(NoteComposer.safeFileName("Vector operations.") == "Vector operations")
+        #expect(NoteComposer.safeFileName(".hidden") == "hidden")
+        #expect(NoteComposer.safeFileName("...") == "Untitled")
         #expect(NoteComposer.slug("Physics 201 — Term 2") == "physics-201-term-2")
     }
 
@@ -650,5 +655,148 @@ struct DiagramFilterTests {
         #expect(19.0 > extractor.maxAspectRatio)
         // And a squarish diagram is kept.
         #expect(360.0 / 246.0 < extractor.maxAspectRatio)
+    }
+}
+
+@Suite("Section splitting")
+struct SectionTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        config.notebookRouting = ["Vectors": "Courses/Linear Algebra"]
+        return config
+    }
+
+    private func page(_ index: Int, _ markdown: String) -> PageOutput {
+        PageOutput(pageIndex: index, markdown: markdown, confidence: 0.9, source: .vision)
+    }
+
+    // MARK: Title detection
+
+    @Test func detectsHeadingsAtAnyLevel() {
+        #expect(NoteComposer.sectionTitle(of: "## Vectors\n\nbody") == "Vectors")
+        #expect(NoteComposer.sectionTitle(of: "# Sprint Planning\n\nbody") == "Sprint Planning")
+        #expect(NoteComposer.sectionTitle(of: "### Parallel Vectors\n\nbody") == "Parallel Vectors")
+    }
+
+    @Test func ignoresLeadingBlankLines() {
+        #expect(NoteComposer.sectionTitle(of: "\n\n## Vectors\nbody") == "Vectors")
+    }
+
+    @Test("A page that does not open with a heading starts no section")
+    func rejectsNonHeadingPages() {
+        #expect(NoteComposer.sectionTitle(of: "just prose\n\n## a heading later") == nil)
+        #expect(NoteComposer.sectionTitle(of: "") == nil)
+    }
+
+    @Test("A long sentence written large is not a section title")
+    func rejectsImplausibleTitles() {
+        #expect(NoteComposer.sectionTitle(
+            of: "## the quick brown fox jumps over the lazy dog again") == nil)  // too many words
+        #expect(NoteComposer.sectionTitle(of: "## ##") == nil)                   // no letters
+        #expect(NoteComposer.sectionTitle(of: "## ab") == nil)                   // too short
+    }
+
+    // MARK: Grouping
+
+    @Test("Pages accumulate under the heading that opened them")
+    func groupsContinuationPages() {
+        let sections = NoteComposer.sections(in: [
+            page(0, "## Vectors\n\nintro"),
+            page(1, "more about vectors"),
+            page(2, "## Matrices\n\nintro"),
+            page(3, "more about matrices"),
+        ], fallbackTitle: "Notebook")
+
+        #expect(sections.map(\.title) == ["Vectors", "Matrices"])
+        #expect(sections[0].pages.count == 2)
+        #expect(sections[1].pages.count == 2)
+        #expect(sections.filter(\.isExplicit).count == 2)
+    }
+
+    @Test("Pages before the first heading are kept under the notebook's name")
+    func leadingPagesAreNotLost() {
+        let sections = NoteComposer.sections(in: [
+            page(0, "a cover page"),
+            page(1, "## Vectors\n\nintro"),
+        ], fallbackTitle: "Calculus")
+
+        #expect(sections.map(\.title) == ["Calculus", "Vectors"])
+        #expect(!sections[0].isExplicit)
+        #expect(sections[1].isExplicit)
+    }
+
+    @Test("A notebook with no headings at all stays one note")
+    func headinglessNotebookIsOneSection() {
+        let sections = NoteComposer.sections(in: [page(0, "prose"), page(1, "more prose")],
+                                             fallbackTitle: "Scratch")
+        #expect(sections.count == 1)
+        #expect(sections[0].title == "Scratch")
+        #expect(sections[0].pages.count == 2)
+    }
+
+    // MARK: Composition
+
+    @Test("Each section becomes its own categorised, tagged note")
+    func sectionsBecomeCategorisedNotes() {
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
+            pages: [page(0, "## Vectors\n\nintro"),
+                    page(1, "continued"),
+                    page(2, "## Sprint Planning\n\nstandup notes")])
+
+        #expect(notes.count == 2)
+
+        // A routed section goes where the rule says.
+        #expect(notes[0].relativePath == "Courses/Linear Algebra/Vectors.md")
+        #expect(notes[0].frontmatter["category"] == .string("Vectors"))
+        #expect(notes[0].frontmatter["notebook"] == .string("Current"))
+        #expect(notes[0].frontmatter["source_pages"] == .intList([1, 2]))
+        #expect(notes[0].frontmatter["tags"] == .list(["inkstone", "handwritten", "vectors"]))
+
+        // An unrouted one nests under its notebook rather than the vault root,
+        // so two notebooks cannot fight over the same file name.
+        #expect(notes[1].relativePath == "Inkstone/Current/Sprint Planning.md")
+        #expect(notes[1].frontmatter["category"] == .string("Sprint Planning"))
+    }
+
+    @Test("Untitled leading pages are not given a bogus category")
+    func fallbackSectionIsNotCategorised() {
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Scratch", sourceURL: URL(fileURLWithPath: "/tmp/Scratch.pdf"),
+            pages: [page(0, "loose notes")])
+
+        #expect(notes[0].frontmatter["category"] == nil)
+        #expect(notes[0].frontmatter["tags"] == .list(["inkstone", "handwritten"]))
+        #expect(notes[0].relativePath == "Inkstone/Scratch/Scratch.md")
+    }
+
+    @Test("A heading used twice in one notebook does not overwrite itself")
+    func duplicateHeadingsGetDistinctPaths() {
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
+            pages: [page(0, "## Standup\n\nmonday"), page(1, "## Standup\n\ntuesday")])
+
+        #expect(notes.count == 2)
+        #expect(notes[0].relativePath != notes[1].relativePath)
+        #expect(notes[1].relativePath.hasSuffix("Standup (2).md"))
+    }
+
+    @Test("A single-page section carries no page heading clutter")
+    func singlePageSectionsAreClean() {
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
+            pages: [page(4, "## Vectors\n\nthe body")])
+        #expect(!notes[0].contents.contains("## Page"))
+        #expect(notes[0].frontmatter["source_pages"] == .intList([5]))
+    }
+
+    @Test("An empty routing rule cannot swallow every section")
+    func emptyPatternIsIgnored() {
+        var config = config
+        config.notebookRouting = ["": "Everything"]
+        let composer = NoteComposer(config: config, granularity: .section)
+        #expect(composer.routeIfMatched("Vectors") == nil)
     }
 }

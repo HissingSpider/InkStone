@@ -99,6 +99,27 @@ A near-blank page short-circuits to a perfect score. A blank page is a confident
 "nothing here", not a failed transcription, and escalating it to a paid model
 would be pure waste.
 
+## Section splitting
+
+`--granularity section` exists because handwriting apps cap notebook counts,
+which pushes people to keep several subjects in one book.
+
+A section starts at any page whose first line is a markdown heading. The check
+runs against the page's *finished markdown*, not its raw OCR lines, which means
+it works identically for locally recognised and cloud-transcribed pages and
+costs nothing for a cached page, because the markdown is already in the state
+store.
+
+Candidate titles are filtered: three to sixty characters, at most six words, and
+at least one letter. That keeps a long sentence written large, or a smear of OCR
+punctuation, from becoming a note name.
+
+Routing for a section prefers a rule matching the section title, falling back to
+nesting under the notebook rather than to the vault's default folder — otherwise
+every unrouted section from every notebook would pile into one directory and two
+notebooks containing a "Standup" would overwrite each other on alternate runs.
+Within one notebook, repeated headings are disambiguated with a numeric suffix.
+
 ## Edit protection
 
 `VaultWriter` stores the hash of exactly what it wrote. Before overwriting, it
