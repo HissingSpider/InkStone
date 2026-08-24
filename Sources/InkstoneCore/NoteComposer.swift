@@ -66,11 +66,21 @@ public struct ComposedNote: Sendable {
     public var relativePath: String
     public var body: String
     public var frontmatter: [String: FrontmatterValue]
+    /// Provenance, rendered as a collapsed callout beneath the body.
+    ///
+    /// Obsidian only parses properties at the very top of a file, so the block
+    /// up there has to stay small and useful. Everything that is merely a record
+    /// of how the note was made belongs out of the way at the bottom.
+    public var footer: String?
     /// Pages that scored below the escalation threshold and were not rescued.
     public var lowConfidencePages: [Int]
+    /// The note's own name, so cross-linking can avoid linking it to itself.
+    public var title: String = ""
 
     public var contents: String {
-        Frontmatter.render(frontmatter) + "\n" + body + "\n"
+        var text = Frontmatter.render(frontmatter) + "\n" + body + "\n"
+        if let footer { text += "\n---\n\n" + footer + "\n" }
+        return text
     }
 }
 
@@ -146,7 +156,6 @@ public struct NoteComposer: Sendable {
                     includePageHeadings: section.pages.count > 1)
 
                 note.frontmatter["notebook"] = .string(notebook)
-                note.frontmatter["source_pages"] = .intList(section.pages.map { $0.pageIndex + 1 })
                 if section.isExplicit {
                     note.frontmatter["category"] = .string(section.title)
                     // Tagging as well as a field: a field is queryable, a tag is
@@ -251,43 +260,51 @@ public struct NoteComposer: Sendable {
             }
 
             let body = page.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-            if includePageHeadings {
-                var heading = "## Page \(page.pageIndex + 1)"
-                if page.source == .vlm { heading += " ^vlm" }
-                sections.append(body.isEmpty
-                    ? "\(heading)\n\n*(blank page)*"
-                    : "\(heading)\n\n\(body)")
-            } else if !body.isEmpty {
-                sections.append(body)
-            }
+            guard !body.isEmpty else { continue }
+
+            // Page numbers are an artefact of the source PDF, not of the notes.
+            // Reordering or re-exporting a notebook renumbers everything, so a
+            // heading built from them is worse than no heading: it looks like
+            // structure and is really just noise.
+            sections.append(includePageHeadings && config.showPageNumbers
+                ? "## Page \(page.pageIndex + 1)\n\n\(body)"
+                : body)
         }
 
         let confidences = pages.filter { !$0.isBlank }.map(\.confidence)
         let meanConfidence = confidences.isEmpty
             ? 1.0 : confidences.reduce(0, +) / Double(confidences.count)
+        let method = escalatedCount == 0 ? "vision"
+            : (escalatedCount == pages.count ? config.resolvedModel : "mixed")
 
+        // The small, queryable block at the top.
         var frontmatter: [String: FrontmatterValue] = [
-            "title": .string(notebook),
-            "source": .string(sourceURL.lastPathComponent),
-            "pages": .int(pages.count),
-            "transcriber": .string("inkstone"),
-            "ocr": .string(escalatedCount == 0 ? "vision"
-                           : (escalatedCount == pages.count ? "vlm" : "mixed")),
-            "quality": .double((meanConfidence * 1000).rounded() / 1000),
-            "created": .date(now),
-            "updated": .date(now),
+            "notebook": .string(notebook),
             "tags": .list(config.defaultTags),
         ]
         if !lowConfidence.isEmpty {
             frontmatter["needs_review"] = .bool(true)
-            frontmatter["low_confidence_pages"] = .intList(lowConfidence)
+        }
+        frontmatter["updated"] = .date(now)
+
+        // The record of how it was made, tucked underneath.
+        var provenance = ["`\(sourceURL.lastPathComponent)`", method,
+                          Frontmatter.dayString(now)]
+        if method == "vision" {
+            provenance.append(String(format: "quality %.2f", meanConfidence))
+        }
+        var footer = "> [!abstract]- Transcription\n> " + provenance.joined(separator: " · ")
+        if !lowConfidence.isEmpty {
+            footer += "\n> Some of this page was hard to read and may be wrong."
         }
 
         return ComposedNote(
             relativePath: "\(folder)/\(Self.safeFileName(notebook)).md",
-            body: sections.joined(separator: "\n\n"),
+            body: sections.joined(separator: "\n\n---\n\n"),
             frontmatter: frontmatter,
-            lowConfidencePages: lowConfidence)
+            footer: footer,
+            lowConfidencePages: lowConfidence,
+            title: notebook)
     }
 
     // MARK: Page body

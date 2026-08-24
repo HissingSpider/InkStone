@@ -74,9 +74,12 @@ public struct VaultWriter: Sendable {
         }
 
         // Carry the original creation date forward so re-runs do not make every
-        // note look newly created.
+        // note look newly created — but only when the note actually has that
+        // property. Reintroducing a key the composer deliberately dropped would
+        // resurrect it in every note on the next rewrite.
         var note = note
-        if let block = Frontmatter.split(existing).frontmatter,
+        if note.frontmatter["created"] != nil,
+           let block = Frontmatter.split(existing).frontmatter,
            let created = Frontmatter.value(of: "created", in: block) {
             note.frontmatter["created"] = .string(created)
         }

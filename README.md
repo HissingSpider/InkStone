@@ -116,6 +116,41 @@ Diagrams are embedded where they sat on the page, not collected at the bottom.
 
 ---
 
+## What a note looks like
+
+The properties block is deliberately small. Obsidian only parses frontmatter at
+the very top of a file, so everything up there competes for the reader's
+attention with the note itself — and a record of *how* the note was made is not
+what you opened it for. Provenance goes to a collapsed callout at the bottom:
+
+```markdown
+> [!abstract]- Transcription
+> `Calculus.pdf` · gpt-4o · 2026-08-24
+```
+
+Page numbers are omitted. They come from the source PDF, and re-exporting or
+reordering a notebook renumbers all of them, so a `## Page 7` heading looks like
+structure while carrying none. Pages are separated by a rule instead. Set
+`"showPageNumbers": true` if you want them back.
+
+## Notes link to each other
+
+The first mention of any other note's title becomes a wikilink, so a
+transcription that says "we scale vectors" links to your `Vectors` note. Your own
+notes are indexed alongside the generated ones — the vault's existing vocabulary
+matters more than ours.
+
+The restraint is the point. Only the first mention in a note is linked, never
+inside an existing link, a code block, LaTeX, a heading or a callout, and never a
+note to itself. Titles shorter than four characters are skipped, or a note called
+`Set` would light up every sentence that used the word.
+
+Turn it off with `"crossLink": false`.
+
+**One thing to watch:** if a generated note has the same name as one of yours,
+`[[Vectors]]` becomes ambiguous and Obsidian picks for you. Either rename one, or
+route the generated notes elsewhere with `notebookRouting`.
+
 ## Your edits are safe
 
 This is the constraint the design bends around: **Inkstone overwrites a note
@@ -249,10 +284,9 @@ together under the notebook's own name so nothing is orphaned.
 Each section becomes its own note, categorised:
 
 ```yaml
-title: Vectors
 category: Vectors
 notebook: Calculus
-source_pages: [2, 3]
+updated: 2026-08-24
 tags: [inkstone, handwritten, vectors]
 ```
 
@@ -307,6 +341,8 @@ to defaults, so a config written by an older version keeps working.
 | `minDiagramAreaFraction` | `0.01` | Share of a page a drawing must cover |
 | `diagramCropPadding` | `12` | Pixels of breathing room around a crop |
 | `notebookRouting` | `{}` | `{"Physics 201": "Courses/Physics"}` — matches notebook *and* section names, prefix match |
+| `showPageNumbers` | `false` | Emit `## Page N` headings |
+| `crossLink` | `true` | Link first mentions of other notes as `[[Wikilinks]]` |
 | `defaultTags` | `["inkstone", "handwritten"]` | Added to every note |
 | `sectionAliases` | `{}` | Fix OCR'd section names: `{"Workinet": "Worksheet"}` |
 

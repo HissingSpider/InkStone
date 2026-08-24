@@ -104,6 +104,14 @@ public struct InkstoneConfig: Codable, Sendable {
     /// `notesSubfolder/<Notebook Name>`.
     public var notebookRouting: [String: String]
 
+    /// Emit `## Page N` headings. Off by default: page numbers come from the
+    /// source PDF, and re-exporting or reordering a notebook renumbers them all,
+    /// so they look like structure while carrying none.
+    public var showPageNumbers: Bool
+
+    /// Link the first mention of any other note's title as `[[Wikilink]]`.
+    public var crossLink: Bool
+
     /// Tags added to the frontmatter of every generated note.
     public var defaultTags: [String]
 
@@ -144,6 +152,8 @@ public struct InkstoneConfig: Codable, Sendable {
         diagramCropPadding: 12,
         diagramExtractionEnabled: true,
         notebookRouting: [:],
+        showPageNumbers: false,
+        crossLink: true,
         defaultTags: ["inkstone", "handwritten"],
         sectionAliases: [:],
         ignoreLinePatterns: [#"^\s*m[a2o]d[eo]\s+w[il]th\s+g[o0]{2}dn[o0]tes\s*$"#]

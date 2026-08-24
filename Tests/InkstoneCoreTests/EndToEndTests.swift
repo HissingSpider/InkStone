@@ -56,10 +56,11 @@ struct EndToEndTests {
             let contents = try String(contentsOf: note, encoding: .utf8)
 
             #expect(contents.hasPrefix("---\n"))
-            #expect(contents.contains("title: Field Notes"))
-            #expect(contents.contains("transcriber: inkstone"))
-            #expect(contents.contains("## Page 1"))
-            #expect(contents.contains("## Page 2"))
+            #expect(contents.contains("notebook: Field Notes"))
+            #expect(contents.contains("tags: [inkstone, handwritten]"))
+            // Provenance lives in a footer, not in the properties block.
+            #expect(contents.contains("> [!abstract]- Transcription"))
+            #expect(contents.contains("`Field Notes.pdf`"))
             // Vision on rendered Helvetica is reliable enough to assert on the
             // actual words; if this ever breaks, recognition genuinely broke.
             #expect(contents.contains("sandbar"), "\(contents)")
@@ -106,7 +107,6 @@ struct EndToEndTests {
 
             let contents = try String(
                 contentsOf: config.notesURL.appendingPathComponent("Journal.md"), encoding: .utf8)
-            #expect(contents.contains("## Page 3"))
             #expect(contents.contains("Wednesday"), "\(contents)")
         }
     }
@@ -136,7 +136,10 @@ struct EndToEndTests {
 
             let sidecar = config.notesURL.appendingPathComponent("Ideas.inkstone-new.md")
             #expect(FileManager.default.fileExists(atPath: sidecar.path))
-            #expect(try String(contentsOf: sidecar, encoding: .utf8).contains("## Page 2"))
+            // The sidecar holds the full new transcription, both pages of it.
+            let rejected = try String(contentsOf: sidecar, encoding: .utf8)
+            #expect(rejected.contains("second idea") || rejected.contains("A second"),
+                    "\(rejected)")
         }
     }
 
@@ -540,5 +543,44 @@ struct AttachmentRepairTests {
 
         let after = try FileManager.default.contentsOfDirectory(atPath: attachments.path)
         #expect(Set(after) == Set(before))
+    }
+}
+
+@Suite("Frontmatter does not accrete", .serialized)
+struct FrontmatterAccretionTests {
+
+    @Test("A dropped property stays dropped across rewrites")
+    func removedKeysDoNotComeBack() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("inkstone-accrete-\(UUID().uuidString)")
+        let inbox = root.appendingPathComponent("Inbox")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = InkstoneConfig.default
+        config.inboxPath = inbox.path
+        config.vaultPath = root.appendingPathComponent("Vault").path
+        config.renderDPI = 150
+
+        try Fixtures.makePDF(at: inbox.appendingPathComponent("Log.pdf"), title: "Log",
+                             pages: [.init(lines: ["Some content here"])])
+        let state = try StateStore(url: root.appendingPathComponent("state.sqlite3"))
+        _ = await Pipeline(config: config, state: state).run()
+
+        let note = config.notesURL.appendingPathComponent("Log.md")
+        // Pretend an older version wrote a `created` property.
+        var contents = try String(contentsOf: note, encoding: .utf8)
+        contents = contents.replacingOccurrences(
+            of: "---\n", with: "---\ncreated: 2020-01-01\n", options: [], range:
+                contents.range(of: "---\n"))
+        try contents.write(to: note, atomically: true, encoding: .utf8)
+
+        var options = PipelineOptions()
+        options.rewrite = true
+        options.force = true
+        _ = await Pipeline(config: config, state: state, options: options).run()
+
+        let rewritten = try String(contentsOf: note, encoding: .utf8)
+        #expect(!rewritten.contains("created:"), "\(rewritten)")
     }
 }

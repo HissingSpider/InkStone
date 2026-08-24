@@ -99,15 +99,20 @@ public final class Pipeline: @unchecked Sendable {
             }
             log.info("scanning \(documents.count) notebook(s) in \(config.inboxURL.path)")
 
+            // Compose everything first, then write. Cross-linking needs the
+            // full set of titles: a note produced from the first notebook has
+            // to be able to link one produced from the last.
+            var pending: [ComposedNote] = []
             for document in documents {
                 do {
-                    try await process(document, into: &result)
+                    pending += try await process(document, into: &result)
                 } catch {
                     let message = "\(document.lastPathComponent): \(error)"
                     log.error(message)
                     result.errors.append(message)
                 }
             }
+            try writeNotes(pending, into: &result)
         } catch {
             let message = "\(error)"
             log.error(message)
@@ -134,7 +139,50 @@ public final class Pipeline: @unchecked Sendable {
 
     // MARK: One document
 
-    private func process(_ url: URL, into result: inout PipelineResult) async throws {
+    /// Cross-links and writes the run's notes.
+    private func writeNotes(_ notes: [ComposedNote], into result: inout PipelineResult) throws {
+        var notes = notes
+
+        if config.crossLink, !notes.isEmpty {
+            // The user's own notes matter as much as ours — more, really. They
+            // are the vault's existing vocabulary.
+            var index = LinkIndex.scanningVault(at: config.vaultURL)
+            for note in notes { index.add(note.title) }
+
+            for offset in notes.indices {
+                notes[offset].body = index.linkify(
+                    notes[offset].body, excluding: notes[offset].title)
+            }
+        }
+
+        guard !options.dryRun else {
+            for note in notes {
+                log.info("would write \(note.relativePath) (\(note.body.count) chars)")
+                result.notesWritten += 1
+            }
+            return
+        }
+
+        let writer = VaultWriter(vaultURL: config.vaultURL, state: state, force: options.force)
+        for note in notes {
+            let outcome = try writer.write(note)
+            result.outcomes.append(outcome)
+            switch outcome {
+            case .created(let url): log.info("created \(url.lastPathComponent)")
+            case .updated(let url): log.info("updated \(url.lastPathComponent)")
+            case .unchanged: break
+            case .locked(let url):
+                log.info("locked, left alone: \(url.lastPathComponent)")
+            case .protected(let note, let sidecar, let reason):
+                log.warn("\(note.lastPathComponent) \(reason); wrote \(sidecar.lastPathComponent)")
+            }
+            if outcome.wroteNote { result.notesWritten += 1 }
+            if case .protected = outcome { result.notesSkipped += 1 }
+            if case .locked = outcome { result.notesSkipped += 1 }
+        }
+    }
+
+    private func process(_ url: URL, into result: inout PipelineResult) async throws -> [ComposedNote] {
         // Canonicalise before it becomes a database key: the same PDF reached
         // through /var and /private/var, or through a symlinked vault, must not
         // grow two sets of page rows and re-OCR itself on every run.
@@ -143,7 +191,7 @@ public final class Pipeline: @unchecked Sendable {
 
         if !options.reprocessAll, !options.rewrite, try state.documentHash(path: path) == fileHash {
             log.debug("unchanged, skipping: \(url.lastPathComponent)")
-            return
+            return []
         }
         result.documentsChanged += 1
 
@@ -196,37 +244,14 @@ public final class Pipeline: @unchecked Sendable {
             }
         }
 
-        // Compose and write.
         let notes = composer.compose(notebook: notebook, sourceURL: url, pages: pages)
-        let writer = VaultWriter(vaultURL: config.vaultURL, state: state, force: options.force)
-
-        for note in notes {
-            if options.dryRun {
-                log.info("would write \(note.relativePath) (\(note.body.count) chars)")
-                result.notesWritten += 1
-                continue
-            }
-            let outcome = try writer.write(note)
-            result.outcomes.append(outcome)
-            switch outcome {
-            case .created(let url): log.info("created \(url.lastPathComponent)")
-            case .updated(let url): log.info("updated \(url.lastPathComponent)")
-            case .unchanged: break
-            case .locked(let url):
-                log.info("locked, left alone: \(url.lastPathComponent)")
-            case .protected(let note, let sidecar, let reason):
-                log.warn("\(note.lastPathComponent) \(reason); wrote \(sidecar.lastPathComponent)")
-            }
-            if outcome.wroteNote { result.notesWritten += 1 }
-            if case .protected = outcome { result.notesSkipped += 1 }
-            if case .locked = outcome { result.notesSkipped += 1 }
-        }
 
         if !options.dryRun {
             try state.trimPages(documentPath: path, to: renderer.pageCount)
             try state.recordDocument(path: path, baseName: notebook,
                                      fileHash: fileHash, pageCount: renderer.pageCount)
         }
+        return notes
     }
 
     /// Repairs missing attachment files for an otherwise cached page.

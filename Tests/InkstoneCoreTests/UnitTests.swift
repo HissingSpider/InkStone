@@ -152,14 +152,14 @@ struct FrontmatterTests {
     func renderUsesStableKeyOrder() {
         let block = Frontmatter.render([
             "tags": .list(["inkstone"]),
-            "title": .string("Notes"),
-            "pages": .int(3),
+            "category": .string("Notes"),
+            "notebook": .string("Book"),
             "zzz_custom": .bool(true),
         ])
         let keys = block.split(separator: "\n")
             .filter { $0 != "---" }
             .map { String($0.split(separator: ":")[0]) }
-        #expect(keys == ["title", "pages", "tags", "zzz_custom"])
+        #expect(keys == ["category", "notebook", "tags", "zzz_custom"])
     }
 
     @Test("Page-number lists emit as real YAML integers, not quoted strings")
@@ -328,8 +328,8 @@ struct NoteComposerTests {
         // flag from the number was the bug that shipped bad pages unflagged.
         #expect(notes[0].lowConfidencePages == [2])
         #expect(notes[0].frontmatter["needs_review"] == .bool(true))
-        #expect(notes[0].contents.contains("## Page 1"))
-        #expect(notes[0].contents.contains("## Page 2"))
+        #expect(notes[0].contents.contains("fine"))
+        #expect(notes[0].contents.contains("murky"))
     }
 
     @Test("A page the gate cleared is not flagged, however low its raw score")
@@ -349,7 +349,7 @@ struct NoteComposerTests {
             pages: [PageOutput(pageIndex: 0, markdown: "rescued", confidence: 1.0,
                                needsReview: true, source: .vlm)])
         #expect(notes[0].lowConfidencePages.isEmpty)
-        #expect(notes[0].frontmatter["ocr"] == .string("vlm"))
+        #expect(notes[0].frontmatter["needs_review"] == nil)
     }
 
     @Test func pageGranularityProducesOneNotePerPage() {
@@ -366,7 +366,8 @@ struct NoteComposerTests {
         let notes = NoteComposer(config: config).compose(
             notebook: "Recipes", sourceURL: URL(fileURLWithPath: "/tmp/Recipes.pdf"),
             pages: [PageOutput(pageIndex: 0, markdown: "  ", confidence: 1, source: .vision)])
-        #expect(notes[0].contents.contains("*(blank page)*"))
+        // A blank page contributes nothing rather than a placeholder heading.
+        #expect(!notes[0].contents.contains("## Page"))
     }
 }
 
@@ -889,7 +890,6 @@ struct SectionTests {
         #expect(notes[0].relativePath == "Courses/Linear Algebra/Vectors.md")
         #expect(notes[0].frontmatter["category"] == .string("Vectors"))
         #expect(notes[0].frontmatter["notebook"] == .string("Current"))
-        #expect(notes[0].frontmatter["source_pages"] == .intList([1, 2]))
         #expect(notes[0].frontmatter["tags"] == .list(["inkstone", "handwritten", "vectors"]))
 
         // An unrouted one nests under its notebook rather than the vault root,
@@ -926,7 +926,6 @@ struct SectionTests {
             notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
             pages: [page(4, "## Vectors\n\nthe body")])
         #expect(!notes[0].contents.contains("## Page"))
-        #expect(notes[0].frontmatter["source_pages"] == .intList([5]))
     }
 
     @Test("An empty routing rule cannot swallow every section")
@@ -1163,5 +1162,160 @@ struct GranularityConfigTests {
         // An unrecognised value falls back rather than failing the run.
         config.granularity = "chapters"
         #expect(config.resolvedGranularity == .notebook)
+    }
+}
+
+@Suite("Cross-linking")
+struct LinkIndexTests {
+
+    private var index: LinkIndex {
+        LinkIndex(titles: ["Vectors", "Vector operations", "magnitude", "Economics", "Set"])
+    }
+
+    @Test("The first mention of another note becomes a wikilink")
+    func linksFirstMention() {
+        let out = index.linkify("We add vectors by coordinate.", excluding: "Scaling")
+        #expect(out == "We add [[Vectors|vectors]] by coordinate.")
+    }
+
+    @Test("Casing is preserved with an alias rather than rewriting the sentence")
+    func preservesOriginalCasing() {
+        #expect(index.linkify("Economics is dismal.", excluding: "X")
+                == "[[Economics]] is dismal.")
+        #expect(index.linkify("economics is dismal.", excluding: "X")
+                == "[[Economics|economics]] is dismal.")
+    }
+
+    @Test("Only the first mention is linked, so a note does not turn blue")
+    func linksOnlyOnce() {
+        let out = index.linkify("magnitude and magnitude and magnitude", excluding: "X")
+        #expect(out == "[[magnitude]] and magnitude and magnitude")
+    }
+
+    @Test("The longest matching title wins")
+    func prefersLongerTitles() {
+        let out = index.linkify("See Vector operations for detail.", excluding: "X")
+        #expect(out.contains("[[Vector operations]]"))
+        #expect(!out.contains("[[Vectors|Vector]]"))
+    }
+
+    @Test("A note is never linked to itself")
+    func neverLinksItself() {
+        #expect(index.linkify("Vectors are useful.", excluding: "Vectors")
+                == "Vectors are useful.")
+    }
+
+    @Test("Existing links, embeds, code, maths and headings are left alone")
+    func respectsProtectedRegions() {
+        #expect(index.linkify("[[Vectors]] already", excluding: "X") == "[[Vectors]] already")
+        #expect(index.linkify("![[vectors.png]]", excluding: "X") == "![[vectors.png]]")
+        #expect(index.linkify("`vectors`", excluding: "X") == "`vectors`")
+        #expect(index.linkify("$vectors + 1$", excluding: "X") == "$vectors + 1$")
+        #expect(index.linkify("## Vectors", excluding: "X") == "## Vectors")
+        #expect(index.linkify("> Vectors in a callout", excluding: "X")
+                == "> Vectors in a callout")
+        #expect(index.linkify("```\nvectors\n```", excluding: "X") == "```\nvectors\n```")
+    }
+
+    @Test("Partial words are not linked")
+    func matchesWholeWordsOnly() {
+        #expect(index.linkify("vectorsalad", excluding: "X") == "vectorsalad")
+        #expect(index.linkify("multivectors", excluding: "X") == "multivectors")
+    }
+
+    @Test("Very short titles are ignored, or every sentence would light up")
+    func ignoresShortTitles() {
+        // "Set" is three characters and was passed in, but never indexed.
+        #expect(index.linkify("Set the value.", excluding: "X") == "Set the value.")
+    }
+
+    @Test("An empty index changes nothing")
+    func emptyIndexIsANoOp() {
+        #expect(LinkIndex().linkify("anything at all", excluding: "X") == "anything at all")
+    }
+
+    @Test("The vault's own notes are indexed, and win over ours")
+    func scansTheVault() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            try "content".write(to: directory.appendingPathComponent("magnitude.md"),
+                                atomically: true, encoding: .utf8)
+            let nested = directory.appendingPathComponent("Sub")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try "content".write(to: nested.appendingPathComponent("Eigenvalues.md"),
+                                atomically: true, encoding: .utf8)
+
+            let scanned = LinkIndex.scanningVault(at: directory)
+            #expect(Set(scanned.titles) == ["magnitude", "Eigenvalues"])
+        }
+    }
+}
+
+@Suite("Note shape")
+struct NoteShapeTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        return config
+    }
+
+    @Test("Properties stay small; provenance goes to a footer")
+    func frontmatterIsMinimal() {
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Calculus", sourceURL: URL(fileURLWithPath: "/tmp/Calculus.pdf"),
+            pages: [PageOutput(pageIndex: 3, markdown: "## Vector operations\n\nbody",
+                               confidence: 1, source: .vlm)])
+        let note = notes[0]
+
+        // Obsidian only parses properties at the top of the file, so what is up
+        // there has to earn its place.
+        #expect(note.frontmatter["category"] == .string("Vector operations"))
+        #expect(note.frontmatter["notebook"] == .string("Calculus"))
+        #expect(note.frontmatter["title"] == nil, "title duplicates the file name")
+        #expect(note.frontmatter["source"] == nil)
+        #expect(note.frontmatter["source_pages"] == nil)
+        #expect(note.frontmatter["pages"] == nil)
+        #expect(note.frontmatter["transcriber"] == nil)
+        #expect(note.frontmatter["ocr"] == nil)
+        #expect(note.frontmatter["quality"] == nil, "quality is meaningless for a VLM page")
+
+        let contents = note.contents
+        #expect(contents.contains("> [!abstract]- Transcription"))
+        #expect(contents.contains("`Calculus.pdf`"))
+        // And the footer really is at the bottom.
+        let frontmatterEnd = contents.range(of: "\n---\n")!.upperBound
+        #expect(contents.range(of: "[!abstract]")!.lowerBound > frontmatterEnd)
+    }
+
+    @Test("Page numbers are omitted by default, and pages separated by a rule")
+    func noPageNumbersByDefault() {
+        let notes = NoteComposer(config: config).compose(
+            notebook: "Log", sourceURL: URL(fileURLWithPath: "/tmp/Log.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: "first", confidence: 1, source: .vlm),
+                    PageOutput(pageIndex: 1, markdown: "second", confidence: 1, source: .vlm)])
+
+        #expect(!notes[0].body.contains("## Page"))
+        #expect(notes[0].body.contains("first\n\n---\n\nsecond"))
+    }
+
+    @Test("Page numbers come back when asked for")
+    func pageNumbersAreOptIn() {
+        var config = config
+        config.showPageNumbers = true
+        let notes = NoteComposer(config: config).compose(
+            notebook: "Log", sourceURL: URL(fileURLWithPath: "/tmp/Log.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: "first", confidence: 1, source: .vlm)])
+        #expect(notes[0].body.contains("## Page 1"))
+    }
+
+    @Test("A hard-to-read page still says so, in both places it matters")
+    func reviewFlagSurvivesTheSlimming() {
+        let notes = NoteComposer(config: config).compose(
+            notebook: "Log", sourceURL: URL(fileURLWithPath: "/tmp/Log.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: "murky", confidence: 0.4,
+                               needsReview: true, source: .vision)])
+        #expect(notes[0].frontmatter["needs_review"] == .bool(true))
+        #expect(notes[0].contents.contains("hard to read"))
+        #expect(notes[0].contents.contains("quality 0.40"))
     }
 }

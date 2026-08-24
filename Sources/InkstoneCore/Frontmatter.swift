@@ -20,11 +20,7 @@ public enum Frontmatter {
     /// Key order in the emitted block. Anything unlisted follows, sorted, so a
     /// new field never silently reorders an existing note and makes a spurious
     /// diff in the user's vault history.
-    static let keyOrder = [
-        "title", "category", "notebook", "source", "pages", "source_pages", "created", "updated",
-        "transcriber", "ocr", "quality", "needs_review",
-        "low_confidence_pages", "tags",
-    ]
+    static let keyOrder = ["category", "notebook", "needs_review", "updated", "tags"]
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -32,6 +28,9 @@ public enum Frontmatter {
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
+
+    /// `yyyy-MM-dd`, for the provenance footer.
+    public static func dayString(_ date: Date) -> String { dateFormatter.string(from: date) }
 
     public static func render(_ values: [String: FrontmatterValue]) -> String {
         let ordered = keyOrder.filter { values[$0] != nil }
