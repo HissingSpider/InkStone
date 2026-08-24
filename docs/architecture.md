@@ -163,6 +163,28 @@ Running on the first one would read a truncated file.
 The `watch` command also does a full pass on startup, because a resident process
 must not fall behind while it was not running.
 
+## Credentials
+
+The environment is the obvious place to keep an API key and the wrong place to
+rely on alone. `~/.zshrc` is read only by *interactive* shells; launchd never
+sources a shell profile at all. So a key that works in a terminal is absent from
+the scheduled run, and `launchctl setenv` bridges the gap only until the next
+reboot.
+
+The failure that produces is invisible, which is what makes it worth designing
+against: escalation silently switches itself off, pages come back through local
+OCR flagged `needs_review`, and no error is reported anywhere.
+
+`Credentials` resolves the environment first — so a one-off override still works
+— then a file at `~/.config/inkstone/credentials`. The file is written mode 600,
+created with those permissions rather than chmod-ed afterwards so the key is
+never briefly world-readable, and parsed in shell `export KEY="value"` syntax so
+the same file can be sourced from `.zshrc`. One place to look, one place to
+rotate, and it survives a restart.
+
+`doctor` reports which source the key came from, and warns specifically when
+agents are installed but the key exists only in the environment.
+
 ## No dependencies
 
 `Package.swift` has no external packages. SQLite through the system C API, the

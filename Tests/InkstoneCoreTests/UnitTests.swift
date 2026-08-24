@@ -918,3 +918,128 @@ struct SectionTests {
         #expect(composer.routeIfMatched("Vectors") == nil)
     }
 }
+
+@Suite("Credentials")
+struct CredentialsTests {
+
+    @Test("Shell-style lines parse, so one file serves both the shell and launchd")
+    func parsesShellSyntax() {
+        let parsed = Credentials.parse("""
+            # a comment
+            export OPENAI_API_KEY="sk-one"
+            ANTHROPIC_API_KEY=sk-two
+            export QUOTED='sk-three'
+
+            malformed line with no equals
+            EMPTY=
+            """)
+        #expect(parsed["OPENAI_API_KEY"] == "sk-one")
+        #expect(parsed["ANTHROPIC_API_KEY"] == "sk-two")
+        #expect(parsed["QUOTED"] == "sk-three")
+        #expect(parsed["EMPTY"] == nil)
+        #expect(parsed.count == 3)
+    }
+
+    @Test("Only a matched pair of quotes is stripped")
+    func doesNotMangleValues() {
+        #expect(Credentials.parse(#"K="sk-a=b=c""#)["K"] == "sk-a=b=c")
+        #expect(Credentials.parse(##"K="unmatched"##)["K"] == "\"unmatched")
+    }
+
+    @Test("The environment wins, so a one-off override still works")
+    func environmentTakesPrecedence() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("credentials")
+            try Credentials.store("sk-from-file", as: "OPENAI_API_KEY", at: url)
+
+            let overridden = Credentials.resolve(
+                variable: "OPENAI_API_KEY",
+                environment: ["OPENAI_API_KEY": "sk-from-env"], fileURL: url)
+            #expect(overridden.value == "sk-from-env")
+            #expect(overridden.source == "environment")
+
+            // With an empty environment — which is what launchd gives you — the
+            // file is what keeps escalation working.
+            let fromFile = Credentials.resolve(
+                variable: "OPENAI_API_KEY", environment: [:], fileURL: url)
+            #expect(fromFile.value == "sk-from-file")
+        }
+    }
+
+    @Test("The file is created owner-only, never briefly world-readable")
+    func storedFileIsPrivate() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("credentials")
+            try Credentials.store("sk-secret", as: "OPENAI_API_KEY", at: url)
+
+            let mode = try #require(FileManager.default
+                .attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)
+            #expect(mode.int16Value & 0o077 == 0, "\(String(format: "mode %03o", mode.int16Value))")
+        }
+    }
+
+    @Test("Storing a second key preserves the first")
+    func storePreservesOtherKeys() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("credentials")
+            try Credentials.store("sk-openai", as: "OPENAI_API_KEY", at: url)
+            try Credentials.store("sk-anthropic", as: "ANTHROPIC_API_KEY", at: url)
+
+            #expect(Credentials.resolve(variable: "OPENAI_API_KEY",
+                                        environment: [:], fileURL: url).value == "sk-openai")
+            #expect(Credentials.resolve(variable: "ANTHROPIC_API_KEY",
+                                        environment: [:], fileURL: url).value == "sk-anthropic")
+        }
+    }
+
+    @Test("Rotating replaces rather than appending a duplicate")
+    func storeReplacesExistingValue() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("credentials")
+            try Credentials.store("sk-old", as: "OPENAI_API_KEY", at: url)
+            try Credentials.store("sk-new", as: "OPENAI_API_KEY", at: url)
+
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(!contents.contains("sk-old"))
+            #expect(Credentials.parse(contents)["OPENAI_API_KEY"] == "sk-new")
+        }
+    }
+
+    @Test("A loose-permissioned file is flagged, not silently trusted")
+    func warnsAboutLoosePermissions() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("credentials")
+            try Credentials.store("sk-secret", as: "OPENAI_API_KEY", at: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644],
+                                                  ofItemAtPath: url.path)
+
+            let resolution = Credentials.resolve(
+                variable: "OPENAI_API_KEY", environment: [:], fileURL: url)
+            #expect(resolution.value == "sk-secret")
+            #expect(resolution.permissionWarning != nil)
+        }
+    }
+
+    @Test("A missing file is a state, not an error")
+    func missingFileResolvesToNothing() {
+        let resolution = Credentials.resolve(
+            variable: "OPENAI_API_KEY", environment: [:],
+            fileURL: URL(fileURLWithPath: "/no/such/credentials"))
+        #expect(resolution.value == nil)
+        #expect(resolution.source == "not found")
+    }
+
+    @Test("The factory picks the key up from the file with an empty environment")
+    func factoryReadsFromFile() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("credentials")
+            try Credentials.store("sk-file", as: "OPENAI_API_KEY", at: url)
+
+            var config = InkstoneConfig.default
+            config.escalationMode = "always"
+            config.apiKeyFile = url.path
+
+            #expect(VLM.make(config: config, environment: [:])?.kind == .openai)
+        }
+    }
+}

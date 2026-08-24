@@ -69,6 +69,14 @@ public struct InkstoneConfig: Codable, Sendable {
     /// Absent takes the provider's conventional variable.
     public var apiKeyEnvVar: String?
 
+    /// File the key is read from when it is not in the environment. Absent uses
+    /// `~/.config/inkstone/credentials`.
+    ///
+    /// This is what makes unattended runs work: launchd never sources a shell
+    /// profile, so a key that only lives in `.zshrc` is invisible to the nightly
+    /// agent.
+    public var apiKeyFile: String?
+
     // MARK: Diagrams (P3)
 
     /// Minimum fraction of a page a diagram candidate must cover to be kept.
@@ -112,6 +120,7 @@ public struct InkstoneConfig: Codable, Sendable {
         vlmProvider: nil,
         vlmModel: "",
         apiKeyEnvVar: nil,
+        apiKeyFile: nil,
         minDiagramAreaFraction: 0.01,
         diagramCropPadding: 12,
         diagramExtractionEnabled: true,
@@ -165,6 +174,13 @@ extension InkstoneConfig {
     public var vaultURL: URL { Self.expand(vaultPath) }
     public var notesURL: URL { vaultURL.appendingPathComponent(notesSubfolder) }
     public var attachmentsURL: URL { vaultURL.appendingPathComponent(attachmentsSubfolder) }
+
+    /// The credentials file in force, or nil for the default location.
+    public var credentialsURL: URL? {
+        guard let apiKeyFile, !apiKeyFile.trimmingCharacters(in: .whitespaces).isEmpty
+        else { return nil }
+        return Self.expand(apiKeyFile)
+    }
 
     /// The provider in force. Defaults to OpenAI.
     public var resolvedProvider: VLMProviderKind {

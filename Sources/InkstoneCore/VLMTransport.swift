@@ -132,10 +132,15 @@ public enum VLM {
 
         let kind = config.resolvedProvider
         let variable = config.resolvedKeyEnvVar
-        guard let key = environment[variable], !key.isEmpty else {
-            log.warn("cloud escalation is on but \(variable) is unset")
+        let resolution = Credentials.resolve(
+            variable: variable, environment: environment, fileURL: config.credentialsURL)
+
+        guard let key = resolution.value, !key.isEmpty else {
+            log.warn("cloud escalation is on but \(variable) is not set — "
+                     + "checked the environment and \(config.credentialsURL?.path ?? Credentials.defaultURL.path)")
             return nil
         }
+        if let warning = resolution.permissionWarning { log.warn(warning) }
 
         let model = config.resolvedModel
         switch kind {

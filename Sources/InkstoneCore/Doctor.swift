@@ -44,6 +44,7 @@ public struct Doctor: Sendable {
         checks.append(visionCheck())
         checks.append(escalationCheck())
         checks.append(contentsOf: agentChecks())
+        if let unattended = unattendedKeyCheck() { checks.append(unattended) }
         if let state { checks.append(lastRunCheck(state)) }
         return checks
     }
@@ -192,16 +193,43 @@ public struct Doctor: Sendable {
         }
         let variable = config.resolvedKeyEnvVar
         let mode = config.resolvedEscalationMode.rawValue
-        guard let key = ProcessInfo.processInfo.environment[variable], !key.isEmpty else {
+        let resolution = Credentials.resolve(variable: variable, fileURL: config.credentialsURL)
+
+        guard let key = resolution.value, !key.isEmpty else {
             return Check(status: .fail, title: "Escalation",
-                         detail: "\(mode), but \(variable) is not set",
-                         remedy: "export \(variable) in your shell profile, or set it "
-                                 + "in the launch agent's EnvironmentVariables")
+                         detail: "\(mode), but \(variable) is \(resolution.source)",
+                         remedy: "run `inkstone set-key` to store it where both your shell "
+                                 + "and the launchd agents can read it")
+        }
+        _ = key
+        if let warning = resolution.permissionWarning {
+            return Check(status: .warn, title: "Escalation",
+                         detail: "\(config.resolvedProvider.rawValue) \(config.resolvedModel), mode \(mode)",
+                         remedy: warning + " — run `chmod 600` on it")
         }
         return Check(status: .pass, title: "Escalation",
                      detail: "\(config.resolvedProvider.rawValue) \(config.resolvedModel), "
-                             + "mode \(mode), threshold \(config.escalationThreshold)",
+                             + "mode \(mode), key from \(resolution.source)",
                      remedy: nil)
+    }
+
+    /// Warns when escalation depends on a key the launchd agents cannot see.
+    private func unattendedKeyCheck() -> Check? {
+        guard config.resolvedEscalationMode != .off else { return nil }
+        let agentsInstalled = LaunchAgent.isInstalled(label: LaunchAgent.dailyLabel)
+            || LaunchAgent.isInstalled(label: LaunchAgent.watchLabel)
+        guard agentsInstalled else { return nil }
+
+        let variable = config.resolvedKeyEnvVar
+        let fromFile = Credentials.resolve(
+            variable: variable, environment: [:], fileURL: config.credentialsURL).value
+        guard fromFile == nil else { return nil }
+
+        return Check(
+            status: .warn, title: "Unattended key",
+            detail: "\(variable) is not in the credentials file",
+            remedy: "launchd does not read your shell profile, so the scheduled runs will "
+                    + "silently stop escalating. Run `inkstone set-key` to fix it.")
     }
 
     private func agentChecks() -> [Check] {

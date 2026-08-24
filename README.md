@@ -144,7 +144,27 @@ Escalation is **off by default**. To turn it on:
 }
 ```
 
-and export `OPENAI_API_KEY` in your shell profile (never in the config file).
+Then store the key where everything can reach it:
+
+```bash
+inkstone set-key
+```
+
+That prompts without echoing, and writes `~/.config/inkstone/credentials` with
+mode 600. **Do not rely on `~/.zshrc` alone.** Only interactive shells read it,
+and launchd never reads a shell profile at all, so a key that works perfectly in
+your terminal is simply absent from the nightly agent — escalation switches
+itself off, pages come back through local OCR flagged `needs_review`, and
+nothing reports an error. `launchctl setenv` papers over it until the next
+reboot and then stops.
+
+The file is shell-compatible, so the key can live in exactly one place:
+
+```bash
+# in ~/.zshrc, instead of an export line
+source ~/.config/inkstone/credentials
+```
+
 Anthropic works identically — set `"vlmProvider": "anthropic"` and export
 `ANTHROPIC_API_KEY` instead.
 
@@ -180,6 +200,7 @@ shorthand.
 | `inkstone watch` | Stay resident and transcribe as backups land |
 | `inkstone status` | Configuration and recent runs (`--json` for scripting) |
 | `inkstone install-agent` | Install the daily + watcher launchd agents |
+| `inkstone set-key` | Store an API key where the launchd agents can read it |
 | `inkstone reset` | Forget cached hashes so the next run redoes everything |
 
 Useful flags: `--dry-run` (write nothing), `--all` (ignore caches), `--file`
@@ -256,6 +277,7 @@ to defaults, so a config written by an older version keeps working.
 | `vlmProvider` | `openai` | `openai` or `anthropic` |
 | `vlmModel` | provider default | `gpt-4o` / `claude-opus-5`; empty takes the default |
 | `apiKeyEnvVar` | provider default | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; never the key itself |
+| `apiKeyFile` | `~/.config/inkstone/credentials` | Read when the env var is unset — this is what makes unattended runs work |
 | `diagramExtractionEnabled` | `true` | Crop drawings out as PNGs |
 | `minDiagramAreaFraction` | `0.01` | Share of a page a drawing must cover |
 | `diagramCropPadding` | `12` | Pixels of breathing room around a crop |

@@ -274,6 +274,52 @@ func commandReset() throws {
     Output.print(Output.green("State cleared."))
 }
 
+func commandSetKey() throws {
+    let (config, _) = try loadConfig()
+    let variable = arguments.value("var") ?? config.resolvedKeyEnvVar
+    let url = config.credentialsURL ?? Credentials.defaultURL
+
+    // Read from stdin so the key never appears in an argument list, in `ps`
+    // output, or in shell history — all of which `export KEY=...` exposes it to.
+    let key: String
+    if let piped = arguments.value("stdin"), piped == "-" {
+        key = readLine() ?? ""
+    } else if isatty(STDIN_FILENO) == 1 {
+        Output.print("Paste your \(variable) (input is hidden), then press return:")
+        key = Self_readSecret()
+    } else {
+        key = readLine() ?? ""
+    }
+
+    let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { fail("no key given") }
+
+    try Credentials.store(trimmed, as: variable, at: url)
+    Output.print("\(Output.green("✓")) stored \(variable) in \(url.path) (mode 600)")
+    Output.print("""
+
+    Both your shell and the launchd agents read this file, so the key lives in \
+    one place. To use it interactively too, replace the export line in your \
+    ~/.zshrc with:
+
+      source \(url.path)
+    """)
+}
+
+/// Reads a line from the terminal with echo disabled.
+func Self_readSecret() -> String {
+    var original = termios()
+    tcgetattr(STDIN_FILENO, &original)
+    var quiet = original
+    quiet.c_lflag &= ~tcflag_t(ECHO)
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet)
+    defer {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &original)
+        Output.print()
+    }
+    return readLine() ?? ""
+}
+
 func commandHelp() {
     Output.print("""
     \(Output.bold("inkstone")) \(version) — handwritten notebooks into an Obsidian vault
@@ -289,6 +335,7 @@ func commandHelp() {
       status            Show configuration and recent runs
       install-agent     Install the launchd daily + watcher agents
       uninstall-agent   Remove them
+      set-key           Store an API key where the launchd agents can read it
       reset             Forget cached hashes so the next run redoes everything
       version           Print the version
 
@@ -324,6 +371,7 @@ do {
     case "doctor": try commandDoctor()
     case "install-agent": try commandInstallAgent()
     case "uninstall-agent": try commandUninstallAgent()
+    case "set-key": try commandSetKey()
     case "reset": try commandReset()
     case "version", "--version": Output.print(version)
     case "", "help", "--help", "-h": commandHelp()
