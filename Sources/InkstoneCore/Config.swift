@@ -57,11 +57,17 @@ public struct InkstoneConfig: Codable, Sendable {
     /// wave through pages that are quietly garbage.
     public var escalationMode: String?
 
-    /// Anthropic model used for escalated pages.
+    /// Which service escalated pages go to: `openai` or `anthropic`.
+    public var vlmProvider: String?
+
+    /// Model used for escalated pages. Empty or absent takes the provider's
+    /// default, so switching provider does not strand you on the other one's
+    /// model name.
     public var vlmModel: String
 
-    /// Env var holding the Anthropic API key. Never store the key in config.
-    public var apiKeyEnvVar: String
+    /// Env var holding the API key. Never store the key itself in config.
+    /// Absent takes the provider's conventional variable.
+    public var apiKeyEnvVar: String?
 
     // MARK: Diagrams (P3)
 
@@ -103,8 +109,9 @@ public struct InkstoneConfig: Codable, Sendable {
         escalationThreshold: 0.55,
         cloudEscalationEnabled: false,
         escalationMode: nil,
-        vlmModel: "claude-opus-5",
-        apiKeyEnvVar: "ANTHROPIC_API_KEY",
+        vlmProvider: nil,
+        vlmModel: "",
+        apiKeyEnvVar: nil,
         minDiagramAreaFraction: 0.01,
         diagramCropPadding: 12,
         diagramExtractionEnabled: true,
@@ -158,6 +165,23 @@ extension InkstoneConfig {
     public var vaultURL: URL { Self.expand(vaultPath) }
     public var notesURL: URL { vaultURL.appendingPathComponent(notesSubfolder) }
     public var attachmentsURL: URL { vaultURL.appendingPathComponent(attachmentsSubfolder) }
+
+    /// The provider in force. Defaults to OpenAI.
+    public var resolvedProvider: VLMProviderKind {
+        vlmProvider.flatMap { VLMProviderKind(rawValue: $0.lowercased()) } ?? .openai
+    }
+
+    /// The model in force, falling back to the provider's default.
+    public var resolvedModel: String {
+        let trimmed = vlmModel.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? resolvedProvider.defaultModel : trimmed
+    }
+
+    /// The environment variable the key is read from.
+    public var resolvedKeyEnvVar: String {
+        let trimmed = (apiKeyEnvVar ?? "").trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? resolvedProvider.defaultKeyEnvVar : trimmed
+    }
 
     /// The escalation mode actually in force, reconciling the newer
     /// `escalationMode` with the older `cloudEscalationEnabled` boolean.

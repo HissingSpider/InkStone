@@ -139,13 +139,24 @@ Escalation is **off by default**. To turn it on:
 
 ```json
 {
-  "cloudEscalationEnabled": true,
-  "vlmModel": "claude-opus-5",
-  "escalationThreshold": 0.55
+  "escalationMode": "lowConfidence",
+  "vlmProvider": "openai"
 }
 ```
 
-and export `ANTHROPIC_API_KEY` in your shell profile (never in the config file).
+and export `OPENAI_API_KEY` in your shell profile (never in the config file).
+Anthropic works identically — set `"vlmProvider": "anthropic"` and export
+`ANTHROPIC_API_KEY` instead.
+
+`escalationMode` has three settings. `lowConfidence` pays only for the pages the
+gate judges unreliable. `always` sends every page with content on it, which is
+the right choice when Vision cannot read your hand at all — gating relies on
+signals derived from an OCR pass that is wrong throughout, so it waves through
+pages that are quietly garbage. Per-page hash caching keeps `always` affordable:
+you pay for genuinely new pages, not for the whole notebook every night.
+
+Set `INKSTONE_OPENAI_ENDPOINT` to route through Azure or a gateway that speaks
+the same protocol.
 
 With it off, low-confidence pages are still transcribed and written — they are
 just flagged with `needs_review: true` and listed in `low_confidence_pages`, so
@@ -241,9 +252,10 @@ to defaults, so a config written by an older version keeps working.
 | `usesLanguageCorrection` | `true` | Helps cursive, hurts formulas |
 | `customWords` | `[]` | Names, jargon, project codes |
 | `escalationThreshold` | `0.55` | Below this a page is bad |
-| `cloudEscalationEnabled` | `false` | Master switch for the cloud model |
-| `vlmModel` | `claude-opus-5` | Model used for escalated pages |
-| `apiKeyEnvVar` | `ANTHROPIC_API_KEY` | Env var name; never the key itself |
+| `escalationMode` | `off` | `off`, `lowConfidence`, or `always` |
+| `vlmProvider` | `openai` | `openai` or `anthropic` |
+| `vlmModel` | provider default | `gpt-4o` / `claude-opus-5`; empty takes the default |
+| `apiKeyEnvVar` | provider default | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; never the key itself |
 | `diagramExtractionEnabled` | `true` | Crop drawings out as PNGs |
 | `minDiagramAreaFraction` | `0.01` | Share of a page a drawing must cover |
 | `diagramCropPadding` | `12` | Pixels of breathing room around a crop |

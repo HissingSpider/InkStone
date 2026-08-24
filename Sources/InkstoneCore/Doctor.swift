@@ -185,20 +185,22 @@ public struct Doctor: Sendable {
     }
 
     private func escalationCheck() -> Check {
-        guard config.cloudEscalationEnabled else {
+        guard config.resolvedEscalationMode != .off else {
             return Check(status: .info, title: "Escalation",
                          detail: "disabled — low-confidence pages are flagged, not sent anywhere",
                          remedy: nil)
         }
-        let key = ProcessInfo.processInfo.environment[config.apiKeyEnvVar]
-        guard let key, !key.isEmpty else {
+        let variable = config.resolvedKeyEnvVar
+        let mode = config.resolvedEscalationMode.rawValue
+        guard let key = ProcessInfo.processInfo.environment[variable], !key.isEmpty else {
             return Check(status: .fail, title: "Escalation",
-                         detail: "enabled, but \(config.apiKeyEnvVar) is not set",
-                         remedy: "export \(config.apiKeyEnvVar) in your shell profile, or set it "
+                         detail: "\(mode), but \(variable) is not set",
+                         remedy: "export \(variable) in your shell profile, or set it "
                                  + "in the launch agent's EnvironmentVariables")
         }
         return Check(status: .pass, title: "Escalation",
-                     detail: "\(config.vlmModel), threshold \(config.escalationThreshold)",
+                     detail: "\(config.resolvedProvider.rawValue) \(config.resolvedModel), "
+                             + "mode \(mode), threshold \(config.escalationThreshold)",
                      remedy: nil)
     }
 

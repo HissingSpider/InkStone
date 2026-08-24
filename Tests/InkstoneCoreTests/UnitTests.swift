@@ -371,34 +371,160 @@ struct NoteComposerTests {
 }
 
 @Suite("Cloud escalation")
-struct VLMClientTests {
+struct VLMTests {
 
-    @Test func extractsTextBlocks() throws {
+    // MARK: Provider selection
+
+    @Test("OpenAI is the default, and each provider brings its own model and key")
+    func providerDefaults() {
+        var config = InkstoneConfig.default
+        #expect(config.resolvedProvider == .openai)
+        #expect(config.resolvedModel == "gpt-4o")
+        #expect(config.resolvedKeyEnvVar == "OPENAI_API_KEY")
+
+        config.vlmProvider = "anthropic"
+        #expect(config.resolvedModel == "claude-opus-5")
+        #expect(config.resolvedKeyEnvVar == "ANTHROPIC_API_KEY")
+    }
+
+    @Test("Switching provider does not strand you on the other one's model name")
+    func explicitOverridesWin() {
+        var config = InkstoneConfig.default
+        config.vlmProvider = "anthropic"
+        config.vlmModel = "claude-sonnet-5"
+        config.apiKeyEnvVar = "WORK_KEY"
+        #expect(config.resolvedModel == "claude-sonnet-5")
+        #expect(config.resolvedKeyEnvVar == "WORK_KEY")
+
+        // An unknown provider name falls back rather than failing the run.
+        config.vlmProvider = "acme"
+        #expect(config.resolvedProvider == .openai)
+    }
+
+    @Test func factoryBuildsTheConfiguredProvider() {
+        var config = InkstoneConfig.default
+        config.escalationMode = "always"
+
+        let openai = VLM.make(config: config, environment: ["OPENAI_API_KEY": "k"])
+        #expect(openai?.kind == .openai)
+        #expect(openai?.model == "gpt-4o")
+
+        config.vlmProvider = "anthropic"
+        let anthropic = VLM.make(config: config, environment: ["ANTHROPIC_API_KEY": "k"])
+        #expect(anthropic?.kind == .anthropic)
+
+        // Wrong key for the selected provider is the same as no key.
+        #expect(VLM.make(config: config, environment: ["OPENAI_API_KEY": "k"]) == nil)
+    }
+
+    @Test("No key means no client, not a crash")
+    func noClientWithoutAKey() {
+        var config = InkstoneConfig.default
+        config.escalationMode = "lowConfidence"
+        #expect(VLM.make(config: config, environment: [:]) == nil)
+        #expect(VLM.make(config: config, environment: ["OPENAI_API_KEY": "k"]) != nil)
+    }
+
+    @Test func offModeBuildsNothing() {
+        #expect(VLM.make(config: .default, environment: ["OPENAI_API_KEY": "k"]) == nil)
+    }
+
+    @Test("The endpoint can be pointed at Azure or a gateway")
+    func endpointOverride() {
+        setenv("INKSTONE_OPENAI_ENDPOINT", "https://example.invalid/v1/chat/completions", 1)
+        defer { unsetenv("INKSTONE_OPENAI_ENDPOINT") }
+        #expect(OpenAIVLM(model: "gpt-4o", apiKey: "k").endpoint.host == "example.invalid")
+    }
+
+    // MARK: OpenAI responses
+
+    @Test func openAIExtractsContent() throws {
+        let body = Data(##"""
+            {"choices":[{"finish_reason":"stop","message":{"content":"# Title\nbody"}}]}
+            """##.utf8)
+        #expect(try OpenAIVLM.extractText(from: body) == "# Title\nbody")
+    }
+
+    @Test("A parts array is accepted as well as a plain string")
+    func openAIAcceptsPartsArray() throws {
+        let body = Data(##"""
+            {"choices":[{"message":{"content":[{"type":"text","text":"hello"}]}}]}
+            """##.utf8)
+        #expect(try OpenAIVLM.extractText(from: body) == "hello")
+    }
+
+    @Test("A page truncated mid-transcription fails loudly rather than half-writing")
+    func openAITruncationIsAnError() {
+        let body = Data(##"""
+            {"choices":[{"finish_reason":"length","message":{"content":"half a pa"}}]}
+            """##.utf8)
+        #expect(throws: (any Error).self) { try OpenAIVLM.extractText(from: body) }
+    }
+
+    @Test func openAIEmptyResponsesAreErrors() {
+        #expect(throws: (any Error).self) {
+            try OpenAIVLM.extractText(from: Data(##"{"choices":[]}"##.utf8))
+        }
+        #expect(throws: (any Error).self) {
+            try OpenAIVLM.extractText(
+                from: Data(##"{"choices":[{"message":{"content":"  "}}]}"##.utf8))
+        }
+    }
+
+    @Test("Newer model families are guessed onto max_completion_tokens")
+    func tokenParameterGuess() {
+        #expect(OpenAIVLM.tokenLimitKey(for: "gpt-4o") == "max_tokens")
+        #expect(OpenAIVLM.tokenLimitKey(for: "gpt-4o-mini") == "max_tokens")
+        #expect(OpenAIVLM.tokenLimitKey(for: "o3") == "max_completion_tokens")
+        #expect(OpenAIVLM.tokenLimitKey(for: "gpt-5.2") == "max_completion_tokens")
+        // A wrong guess is recovered by the adaptive retry, which keys off the
+        // API's own complaint rather than a list of model names that will rot.
+        #expect(OpenAIVLM.mentionsTokenParameterSwap(
+            "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."))
+        #expect(!OpenAIVLM.mentionsTokenParameterSwap("invalid api key"))
+    }
+
+    // MARK: Anthropic responses
+
+    @Test func anthropicExtractsTextBlocks() throws {
         let body = Data(##"{"content":[{"type":"text","text":"# Title\nbody"}]}"##.utf8)
-        #expect(try VLMClient.extractText(from: body) == "# Title\nbody")
+        #expect(try AnthropicVLM.extractText(from: body) == "# Title\nbody")
+    }
+
+    @Test func anthropicTruncationIsAnError() {
+        let body = Data(##"""
+            {"stop_reason":"max_tokens","content":[{"type":"text","text":"half"}]}
+            """##.utf8)
+        #expect(throws: (any Error).self) { try AnthropicVLM.extractText(from: body) }
+    }
+
+    @Test func anthropicEmptyContentIsAnError() {
+        #expect(throws: (any Error).self) {
+            try AnthropicVLM.extractText(from: Data(##"{"content":[]}"##.utf8))
+        }
+    }
+
+    // MARK: Shared transport
+
+    @Test("Both providers nest their error message the same way")
+    func transportReadsErrorMessages() {
+        #expect(VLMTransport.errorMessage(Data(##"{"error":{"message":"overloaded"}}"##.utf8))
+                == "overloaded")
+        #expect(VLMTransport.errorMessage(Data("not json".utf8)) == "not json")
     }
 
     @Test("A model that wraps its answer in a fence does not corrupt the note")
     func stripsAWrappingCodeFence() {
-        #expect(VLMClient.stripCodeFence("```markdown\n# Title\n```") == "# Title")
-        #expect(VLMClient.stripCodeFence("# Title") == "# Title")
-    }
-
-    @Test func surfacesAPIErrorMessage() {
-        #expect(VLMClient.errorMessage(Data(##"{"error":{"message":"overloaded"}}"##.utf8))
-                == "overloaded")
-    }
-
-    @Test func emptyContentIsAnError() {
-        #expect(throws: (any Error).self) {
-            try VLMClient.extractText(from: Data(##"{"content":[]}"##.utf8))
-        }
+        #expect(VLMTransport.stripCodeFence("```markdown\n# Title\n```") == "# Title")
+        #expect(VLMTransport.stripCodeFence("# Title") == "# Title")
     }
 
     @Test func backoffGrowsAndIsCapped() {
-        #expect(VLMClient.backoff(attempt: 1) < VLMClient.backoff(attempt: 3))
-        #expect(VLMClient.backoff(attempt: 12) <= 31)
+        #expect(VLMTransport.backoff(attempt: 1) < VLMTransport.backoff(attempt: 3))
+        #expect(VLMTransport.backoff(attempt: 12) <= 31)
     }
+
+    // MARK: Prompt
 
     @Test func promptDemandsPlaceholdersWhenDiagramsExist() {
         let prompt = VLMPrompt.user(pageNumber: 3, notebook: "Physics",
@@ -412,14 +538,6 @@ struct VLMClientTests {
         let prompt = VLMPrompt.user(pageNumber: 1, notebook: "N", hasDiagrams: 0, visionDraft: nil)
         #expect(!prompt.contains(NoteComposer.diagramPlaceholder))
         #expect(!prompt.contains("<draft>"))
-    }
-
-    @Test("No API key means no client, not a crash")
-    func noClientWithoutAKey() {
-        var config = InkstoneConfig.default
-        config.escalationMode = EscalationMode.lowConfidence.rawValue
-        #expect(VLMClient.make(config: config, environment: [:]) == nil)
-        #expect(VLMClient.make(config: config, environment: ["ANTHROPIC_API_KEY": "k"]) != nil)
     }
 }
 

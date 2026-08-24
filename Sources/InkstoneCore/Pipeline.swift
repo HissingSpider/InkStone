@@ -58,7 +58,7 @@ public final class Pipeline: @unchecked Sendable {
     private let gate: ConfidenceGate
     private let extractor: DiagramExtractor
     private let composer: NoteComposer
-    private let vlm: VLMClient?
+    private let vlm: (any VLMProvider)?
 
     public init(config: InkstoneConfig, state: StateStore, options: PipelineOptions = .init()) {
         self.config = config
@@ -68,7 +68,7 @@ public final class Pipeline: @unchecked Sendable {
         self.gate = ConfidenceGate(config: config)
         self.extractor = DiagramExtractor(config: config)
         self.composer = NoteComposer(config: config, granularity: options.granularity)
-        self.vlm = VLMClient.make(config: config)
+        self.vlm = VLM.make(config: config)
     }
 
     // MARK: Run
