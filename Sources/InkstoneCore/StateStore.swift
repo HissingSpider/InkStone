@@ -14,6 +14,9 @@ public struct PageRecord: Sendable, Equatable {
     public var imageHash: String
     public var confidence: Double
     public var escalated: Bool
+    /// The confidence gate's verdict, persisted so a cached page keeps its
+    /// `needs_review` flag without being re-evaluated.
+    public var needsReview: Bool
     /// The page's finished markdown, embeds included.
     ///
     /// Cached so an unchanged page never pays for OCR again: a daily run over a
@@ -24,12 +27,14 @@ public struct PageRecord: Sendable, Equatable {
     public var transcribedAt: Date
 
     public init(documentPath: String, pageIndex: Int, imageHash: String, confidence: Double,
-                escalated: Bool, markdown: String, diagrams: [DiagramCrop], transcribedAt: Date) {
+                escalated: Bool, needsReview: Bool = false, markdown: String,
+                diagrams: [DiagramCrop], transcribedAt: Date) {
         self.documentPath = documentPath
         self.pageIndex = pageIndex
         self.imageHash = imageHash
         self.confidence = confidence
         self.escalated = escalated
+        self.needsReview = needsReview
         self.markdown = markdown
         self.diagrams = diagrams
         self.transcribedAt = transcribedAt
@@ -140,6 +145,25 @@ public final class StateStore: @unchecked Sendable {
 
             CREATE INDEX IF NOT EXISTS idx_pages_doc ON pages(document_path);
             """)
+
+        // CREATE TABLE IF NOT EXISTS does nothing for a database that already
+        // exists, so new columns need adding explicitly.
+        try addColumnIfMissing(
+            table: "pages", column: "needs_review", definition: "INTEGER NOT NULL DEFAULT 0")
+    }
+
+    /// Idempotent `ALTER TABLE … ADD COLUMN`.
+    private func addColumnIfMissing(table: String, column: String, definition: String) throws {
+        let existing = try prepared("PRAGMA table_info(\(table));") { statement -> Set<String> in
+            var names: Set<String> = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                names.insert(Self.text(statement, 1))
+            }
+            return names
+        }
+        guard !existing.contains(column) else { return }
+        log.debug("migrating: adding \(table).\(column)")
+        try exec("ALTER TABLE \(table) ADD COLUMN \(column) \(definition);")
     }
 
     // MARK: Primitive helpers
@@ -240,7 +264,8 @@ public final class StateStore: @unchecked Sendable {
 
     public func pageRecord(documentPath: String, pageIndex: Int) throws -> PageRecord? {
         try prepared("""
-            SELECT image_hash, confidence, escalated, markdown, diagrams, transcribed_at
+            SELECT image_hash, confidence, escalated, markdown, diagrams, transcribed_at,
+                   needs_review
             FROM pages WHERE document_path = ? AND page_index = ?;
             """, [documentPath, pageIndex]) { statement in
             guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
@@ -253,6 +278,7 @@ public final class StateStore: @unchecked Sendable {
                 imageHash: Self.text(statement, 0),
                 confidence: sqlite3_column_double(statement, 1),
                 escalated: sqlite3_column_int(statement, 2) == 1,
+                needsReview: sqlite3_column_int(statement, 6) == 1,
                 markdown: Self.text(statement, 3),
                 diagrams: diagrams,
                 transcribedAt: Self.date(statement, 5))
@@ -265,18 +291,19 @@ public final class StateStore: @unchecked Sendable {
             encoding: .utf8) ?? "[]"
         try run("""
             INSERT INTO pages (document_path, page_index, image_hash, confidence, escalated,
-                               markdown, diagrams, transcribed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                               needs_review, markdown, diagrams, transcribed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(document_path, page_index) DO UPDATE SET
                 image_hash = excluded.image_hash,
                 confidence = excluded.confidence,
                 escalated = excluded.escalated,
+                needs_review = excluded.needs_review,
                 markdown = excluded.markdown,
                 diagrams = excluded.diagrams,
                 transcribed_at = excluded.transcribed_at;
             """, [record.documentPath, record.pageIndex, record.imageHash,
-                  record.confidence, record.escalated, record.markdown, diagrams,
-                  record.transcribedAt])
+                  record.confidence, record.escalated, record.needsReview,
+                  record.markdown, diagrams, record.transcribedAt])
     }
 
     /// Drops page rows past `pageCount`, so a notebook that shrank does not keep

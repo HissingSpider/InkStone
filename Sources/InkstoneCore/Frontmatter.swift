@@ -12,6 +12,7 @@ public enum FrontmatterValue: Sendable, Equatable {
     case bool(Bool)
     case date(Date)
     case list([String])
+    case intList([Int])
 }
 
 public enum Frontmatter {
@@ -21,7 +22,7 @@ public enum Frontmatter {
     /// diff in the user's vault history.
     static let keyOrder = [
         "title", "source", "pages", "created", "updated",
-        "transcriber", "ocr", "mean_confidence", "needs_review",
+        "transcriber", "ocr", "quality", "needs_review",
         "low_confidence_pages", "tags",
     ]
 
@@ -53,6 +54,7 @@ public enum Frontmatter {
         case .bool(let b): return b ? "true" : "false"
         case .date(let d): return dateFormatter.string(from: d)
         case .list(let items): return "[" + items.map(quote).joined(separator: ", ") + "]"
+        case .intList(let items): return "[" + items.map(String.init).joined(separator: ", ") + "]"
         }
     }
 

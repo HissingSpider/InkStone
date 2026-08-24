@@ -156,6 +156,7 @@ public final class Pipeline: @unchecked Sendable {
                 pages.append(PageOutput(
                     pageIndex: index, markdown: cached.markdown,
                     confidence: cached.confidence,
+                    needsReview: cached.needsReview,
                     source: cached.escalated ? .vlm : .vision))
                 continue
             }
@@ -166,12 +167,14 @@ public final class Pipeline: @unchecked Sendable {
 
             pages.append(PageOutput(
                 pageIndex: index, markdown: page.markdown,
-                confidence: page.confidence, source: page.source))
+                confidence: page.quality, needsReview: page.needsReview,
+                source: page.source))
 
             if !options.dryRun {
                 try state.upsertPage(PageRecord(
                     documentPath: path, pageIndex: index, imageHash: fingerprint,
-                    confidence: page.confidence, escalated: page.source == .vlm,
+                    confidence: page.quality, escalated: page.source == .vlm,
+                    needsReview: page.needsReview,
                     markdown: page.markdown, diagrams: page.diagrams, transcribedAt: Date()))
             }
         }
@@ -213,7 +216,9 @@ public final class Pipeline: @unchecked Sendable {
 
     private struct TranscribedPage {
         var markdown: String
-        var confidence: Double
+        /// The gate's blended score, not Vision's raw confidence.
+        var quality: Double
+        var needsReview: Bool
         var source: TranscriptSource
         var diagrams: [DiagramCrop]
     }
@@ -266,7 +271,8 @@ public final class Pipeline: @unchecked Sendable {
                     // A VLM transcription is not scored by Vision; record it as
                     // fully confident so the page stops being re-escalated and
                     // stops dragging the note's mean down.
-                    confidence: 1.0, source: .vlm, diagrams: transcript.diagrams)
+                    quality: 1.0, needsReview: false,
+                    source: .vlm, diagrams: transcript.diagrams)
             } catch {
                 // A failed escalation must not lose the local transcription.
                 log.warn("page \(pageIndex + 1) escalation failed, keeping Vision output: \(error)")
@@ -276,7 +282,8 @@ public final class Pipeline: @unchecked Sendable {
 
         return TranscribedPage(
             markdown: composer.pageBody(transcript),
-            confidence: transcript.confidence,
+            quality: decision.score,
+            needsReview: decision.needsReview,
             source: .vision, diagrams: transcript.diagrams)
     }
 

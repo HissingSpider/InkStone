@@ -70,6 +70,13 @@ public struct DiagramExtractor: Sendable {
     /// Pixels of breathing room added around a crop.
     public var cropPadding: Int = 12
 
+    /// Widest width:height (or height:width) ratio a crop may have.
+    ///
+    /// A real drawing has some extent in both directions. A margin rule, a page
+    /// border or a torn edge is a sliver — one observed crop was 126x2452 — and
+    /// embedding it in a note is pure noise.
+    public var maxAspectRatio: Double = 8
+
     public init() {}
 
     public init(config: InkstoneConfig) {
@@ -169,7 +176,11 @@ public struct DiagramExtractor: Sendable {
             // Reject page rules and long underlines: wide, but only a cell or
             // two tall, so nothing is really drawn there.
             let isHairline = box.rect.height <= 2 && box.rect.width > columns / 5
-            return !isHairline
+            guard !isHairline else { return false }
+
+            let width = Double(box.rect.width), height = Double(box.rect.height)
+            let aspect = max(width / height, height / width)
+            return aspect <= maxAspectRatio
         }
 
         let rects = candidates

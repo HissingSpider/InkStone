@@ -19,13 +19,23 @@ public struct PageOutput: Sendable {
     public var pageIndex: Int
     /// Markdown for the page, diagram embeds already interleaved.
     public var markdown: String
+    /// The confidence gate's blended quality score, not Vision's raw number.
+    ///
+    /// Vision reports high confidence on words it got wrong, so its own figure
+    /// is the wrong thing to surface or to flag on.
     public var confidence: Double
+    /// The gate's verdict, carried through rather than re-derived. Deriving it
+    /// again from `confidence` was the bug that let visibly bad pages ship
+    /// without a `needs_review` flag.
+    public var needsReview: Bool
     public var source: TranscriptSource
 
-    public init(pageIndex: Int, markdown: String, confidence: Double, source: TranscriptSource) {
+    public init(pageIndex: Int, markdown: String, confidence: Double,
+                needsReview: Bool = false, source: TranscriptSource) {
         self.pageIndex = pageIndex
         self.markdown = markdown
         self.confidence = confidence
+        self.needsReview = needsReview
         self.source = source
     }
 
@@ -53,6 +63,7 @@ public struct NoteComposer: Sendable {
     public var config: InkstoneConfig
     public var granularity: NoteGranularity
     private let builder = MarkdownBuilder()
+    private let ignorePatterns: [NSRegularExpression]
 
     /// Placeholder the VLM is told to emit where a diagram belongs.
     public static let diagramPlaceholder = "[[INKSTONE-DIAGRAM]]"
@@ -60,6 +71,21 @@ public struct NoteComposer: Sendable {
     public init(config: InkstoneConfig, granularity: NoteGranularity = .notebook) {
         self.config = config
         self.granularity = granularity
+        self.ignorePatterns = config.ignoreLinePatterns.compactMap {
+            do {
+                return try NSRegularExpression(pattern: $0, options: [.caseInsensitive])
+            } catch {
+                log.warn("ignoring malformed ignoreLinePattern \($0): \(error.localizedDescription)")
+                return nil
+            }
+        }
+    }
+
+    /// True when a line is boilerplate the user never wrote — currently the
+    /// GoodNotes free-tier watermark stamped onto every exported page.
+    func isIgnored(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return ignorePatterns.contains { $0.firstMatch(in: text, range: range) != nil }
     }
 
     /// Builds every note for one source document.
@@ -92,7 +118,7 @@ public struct NoteComposer: Sendable {
 
         for page in pages {
             if page.source == .vlm { escalatedCount += 1 }
-            if page.confidence < config.escalationThreshold && page.source != .vlm {
+            if page.needsReview && page.source != .vlm {
                 lowConfidence.append(page.pageIndex + 1)
             }
 
@@ -119,14 +145,14 @@ public struct NoteComposer: Sendable {
             "transcriber": .string("inkstone"),
             "ocr": .string(escalatedCount == 0 ? "vision"
                            : (escalatedCount == pages.count ? "vlm" : "mixed")),
-            "mean_confidence": .double((meanConfidence * 1000).rounded() / 1000),
+            "quality": .double((meanConfidence * 1000).rounded() / 1000),
             "created": .date(now),
             "updated": .date(now),
             "tags": .list(config.defaultTags),
         ]
         if !lowConfidence.isEmpty {
             frontmatter["needs_review"] = .bool(true)
-            frontmatter["low_confidence_pages"] = .list(lowConfidence.map(String.init))
+            frontmatter["low_confidence_pages"] = .intList(lowConfidence)
         }
 
         return ComposedNote(
@@ -142,10 +168,13 @@ public struct NoteComposer: Sendable {
     /// on the page rather than dumping them all at the bottom.
     public func pageBody(_ transcript: PageTranscript) -> String {
         if let vlm = transcript.vlmMarkdown {
-            return Self.substitutePlaceholders(in: vlm, with: transcript.diagrams)
+            let kept = vlm.split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !isIgnored(String($0).trimmingCharacters(in: .whitespaces)) }
+                .joined(separator: "\n")
+            return Self.substitutePlaceholders(in: kept, with: transcript.diagrams)
         }
 
-        let elements = builder.elements(for: transcript.lines)
+        let elements = builder.elements(for: transcript.lines.filter { !isIgnored($0.text) })
         let diagrams = transcript.diagrams.sorted { $0.anchorTopDownY < $1.anchorTopDownY }
 
         var merged: [String] = []

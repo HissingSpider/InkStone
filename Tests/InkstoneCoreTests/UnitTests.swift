@@ -162,6 +162,12 @@ struct FrontmatterTests {
         #expect(keys == ["title", "pages", "tags", "zzz_custom"])
     }
 
+    @Test("Page-number lists emit as real YAML integers, not quoted strings")
+    func intListsAreUnquoted() {
+        #expect(Frontmatter.scalar(.intList([1, 2, 7])) == "[1, 2, 7]")
+        #expect(Frontmatter.scalar(.list(["1", "2"])) == "[\"1\", \"2\"]")
+    }
+
     @Test func quotingOnlyWhereYAMLNeedsIt() {
         #expect(Frontmatter.quote("Physics 201") == "Physics 201")
         #expect(Frontmatter.quote("A: B") == "\"A: B\"")
@@ -194,14 +200,14 @@ struct ConfidenceGateTests {
 
     @Test("A near-blank page is a confident nothing, not a failed transcription")
     func blankPageNeverEscalates() {
-        let decision = ConfidenceGate(threshold: 0.6, enabled: true)
+        let decision = ConfidenceGate(threshold: 0.6, mode: .lowConfidence)
             .evaluate(transcript([Fixtures.line("hm", y: 0.1, confidence: 0.1)]))
         #expect(!decision.shouldEscalate)
         #expect(decision.score == 1.0)
     }
 
     @Test func lowConfidenceEscalates() {
-        let decision = ConfidenceGate(threshold: 0.6, enabled: true).evaluate(transcript([
+        let decision = ConfidenceGate(threshold: 0.6, mode: .lowConfidence).evaluate(transcript([
             Fixtures.line("a long line of shaky handwriting", y: 0.1, confidence: 0.3),
             Fixtures.line("another shaky line here too", y: 0.2, confidence: 0.25),
         ]))
@@ -210,7 +216,7 @@ struct ConfidenceGateTests {
     }
 
     @Test func confidentPageStaysLocal() {
-        let decision = ConfidenceGate(threshold: 0.6, enabled: true).evaluate(transcript([
+        let decision = ConfidenceGate(threshold: 0.6, mode: .lowConfidence).evaluate(transcript([
             Fixtures.line("a clean confident line of text", y: 0.1, confidence: 0.97),
             Fixtures.line("and a second clean line here", y: 0.2, confidence: 0.95),
         ]), inkCoverage: 0.02)
@@ -219,7 +225,7 @@ struct ConfidenceGateTests {
 
     @Test("With escalation off, a bad page is flagged rather than sent anywhere")
     func disabledGateFlagsOnly() {
-        let decision = ConfidenceGate(threshold: 0.6, enabled: false).evaluate(transcript([
+        let decision = ConfidenceGate(threshold: 0.6, mode: .off).evaluate(transcript([
             Fixtures.line("a long line of shaky handwriting", y: 0.1, confidence: 0.2),
         ]))
         #expect(!decision.shouldEscalate)
@@ -228,7 +234,7 @@ struct ConfidenceGateTests {
 
     @Test("Dense ink with almost no recognised text escalates even at high confidence")
     func inkCoverageSignalCatchesUnreadPages() {
-        let dense = ConfidenceGate(threshold: 0.6, enabled: true).evaluate(
+        let dense = ConfidenceGate(threshold: 0.6, mode: .lowConfidence).evaluate(
             transcript([Fixtures.line("only these few words", y: 0.1, confidence: 0.98)]),
             inkCoverage: 0.30)
         #expect(dense.shouldEscalate)
@@ -300,20 +306,45 @@ struct NoteComposerTests {
         #expect(markdown.hasSuffix("![[d.png]]"), "\(markdown)")
     }
 
-    @Test func lowConfidencePagesAreFlaggedInFrontmatter() {
+    @Test("The gate's verdict drives needs_review, not a re-derived confidence")
+    func flaggingFollowsTheGateVerdict() {
         let notes = NoteComposer(config: config).compose(
             notebook: "Recipes",
             sourceURL: URL(fileURLWithPath: "/tmp/Recipes.pdf"),
             pages: [
-                PageOutput(pageIndex: 0, markdown: "fine", confidence: 0.95, source: .vision),
-                PageOutput(pageIndex: 1, markdown: "murky", confidence: 0.10, source: .vision),
+                PageOutput(pageIndex: 0, markdown: "fine", confidence: 0.95,
+                           needsReview: false, source: .vision),
+                PageOutput(pageIndex: 1, markdown: "murky", confidence: 0.88,
+                           needsReview: true, source: .vision),
             ])
 
         #expect(notes.count == 1)
+        // Page 2 scored 0.88 — high — yet the gate condemned it. Re-deriving the
+        // flag from the number was the bug that shipped bad pages unflagged.
         #expect(notes[0].lowConfidencePages == [2])
         #expect(notes[0].frontmatter["needs_review"] == .bool(true))
         #expect(notes[0].contents.contains("## Page 1"))
         #expect(notes[0].contents.contains("## Page 2"))
+    }
+
+    @Test("A page the gate cleared is not flagged, however low its raw score")
+    func lowScoreAloneDoesNotFlag() {
+        let notes = NoteComposer(config: config).compose(
+            notebook: "Recipes", sourceURL: URL(fileURLWithPath: "/tmp/Recipes.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: "ok", confidence: 0.10,
+                               needsReview: false, source: .vision)])
+        #expect(notes[0].lowConfidencePages.isEmpty)
+        #expect(notes[0].frontmatter["needs_review"] == nil)
+    }
+
+    @Test("An escalated page is never flagged for review")
+    func escalatedPagesAreNotFlagged() {
+        let notes = NoteComposer(config: config).compose(
+            notebook: "Recipes", sourceURL: URL(fileURLWithPath: "/tmp/Recipes.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: "rescued", confidence: 1.0,
+                               needsReview: true, source: .vlm)])
+        #expect(notes[0].lowConfidencePages.isEmpty)
+        #expect(notes[0].frontmatter["ocr"] == .string("vlm"))
     }
 
     @Test func pageGranularityProducesOneNotePerPage() {
@@ -381,7 +412,7 @@ struct VLMClientTests {
     @Test("No API key means no client, not a crash")
     func noClientWithoutAKey() {
         var config = InkstoneConfig.default
-        config.cloudEscalationEnabled = true
+        config.escalationMode = EscalationMode.lowConfidence.rawValue
         #expect(VLMClient.make(config: config, environment: [:]) == nil)
         #expect(VLMClient.make(config: config, environment: ["ANTHROPIC_API_KEY": "k"]) != nil)
     }
@@ -438,5 +469,186 @@ struct InboxScanTests {
             for: URL(fileURLWithPath: "/Users/x/Library/CloudStorage/GoogleDrive-a/My Drive/GN"))
             == "Google Drive")
         #expect(Doctor.cloudProvider(for: URL(fileURLWithPath: "/Users/x/Notes")) == nil)
+    }
+}
+
+@Suite("Lexical plausibility")
+struct LexiconTests {
+
+    /// A tiny fixed lexicon keeps these tests independent of whether the host
+    /// happens to ship /usr/share/dict/words.
+    private let lexicon = Lexicon(words: [
+        "adding", "vectors", "vector", "operations", "parallel", "scalar",
+        "multiple", "other", "length", "magnitude", "coordinate", "entries",
+    ])
+
+    @Test("Real OCR garbage is caught even though every character is a letter")
+    func catchesPlausibleLookingNonsense() throws {
+        // Verbatim from a real run: "Adding 2 vectors / all entries coordinate once".
+        let ratio = try #require(
+            lexicon.unknownWordRatio(of: "Abling 2 vedur all enfris coordinfe unce Vectr uperting"))
+        #expect(ratio > 0.8, "\(ratio)")
+    }
+
+    @Test func acceptsGenuineText() throws {
+        let ratio = try #require(
+            lexicon.unknownWordRatio(of: "adding vectors parallel scalar multiple other length"))
+        #expect(ratio == 0)
+    }
+
+    @Test("Short tokens and numbers are not judged")
+    func ignoresShortAndNumericTokens() {
+        // dx, cm, 3, <1,2> carry no evidence either way and must not condemn a page.
+        #expect(Lexicon.checkableTokens(in: "dx cm 3 <1,2> f(x) iff") == [])
+        #expect(Lexicon.checkableTokens(in: "vectors r2 coordinate") == ["vectors", "coordinate"])
+    }
+
+    @Test("Too few tokens yields no verdict rather than a noisy one")
+    func abstainsOnShortText() {
+        #expect(lexicon.unknownWordRatio(of: "adding vectors") == nil)
+    }
+
+    @Test("A missing dictionary disables the signal instead of failing")
+    func absentDictionaryIsSafe() {
+        let empty = Lexicon(loadingFrom: URL(fileURLWithPath: "/no/such/words"))
+        #expect(!empty.isAvailable)
+        #expect(empty.unknownWordRatio(of: "any amount of text at all whatsoever here") == nil)
+    }
+}
+
+@Suite("Escalation modes")
+struct EscalationModeTests {
+
+    private func transcript(_ text: String, confidence: Double = 0.95) -> PageTranscript {
+        PageTranscript(
+            pageIndex: 0,
+            lines: text.split(separator: "|").enumerated().map { index, line in
+                Fixtures.line(String(line), y: 0.1 + Double(index) * 0.05, confidence: confidence)
+            },
+            source: .vision)
+    }
+
+    private let lexicon = Lexicon(words: ["adding", "vectors", "parallel", "scalar", "length",
+                                          "multiple", "other", "computing", "entries"])
+
+    @Test("High Vision confidence does not rescue a page that is not language")
+    func lexicalSignalOverridesInflatedConfidence() {
+        let gate = ConfidenceGate(threshold: 0.55, mode: .lowConfidence, lexicon: lexicon)
+        let decision = gate.evaluate(
+            transcript("Abling 2 vedur|all enfris coordinfe unce|Vectr uperting sude", confidence: 0.95))
+
+        #expect(decision.needsReview, "score \(decision.score), reasons \(decision.reasons)")
+        #expect(decision.shouldEscalate)
+        #expect(decision.reasons.contains { $0.contains("recognisable words") })
+    }
+
+    @Test func genuineTextPassesCleanly() {
+        let gate = ConfidenceGate(threshold: 0.55, mode: .lowConfidence, lexicon: lexicon)
+        let decision = gate.evaluate(
+            transcript("adding vectors parallel|scalar multiple other|computing length entries"),
+            inkCoverage: 0.02)
+        #expect(!decision.needsReview, "reasons: \(decision.reasons)")
+        #expect(!decision.shouldEscalate)
+    }
+
+    @Test("always mode escalates even a page the gate is happy with")
+    func alwaysModeIgnoresTheGate() {
+        let gate = ConfidenceGate(threshold: 0.55, mode: .always, lexicon: lexicon)
+        let decision = gate.evaluate(
+            transcript("adding vectors parallel|scalar multiple other|computing length entries"))
+        #expect(decision.shouldEscalate)
+        #expect(!decision.needsReview)
+    }
+
+    @Test("always mode still refuses to spend money on a blank page")
+    func alwaysModeSkipsBlankPages() {
+        let gate = ConfidenceGate(threshold: 0.55, mode: .always, lexicon: lexicon)
+        #expect(!gate.evaluate(transcript("hm")).shouldEscalate)
+    }
+
+    @Test func offModeFlagsWithoutSending() {
+        let gate = ConfidenceGate(threshold: 0.55, mode: .off, lexicon: lexicon)
+        let decision = gate.evaluate(transcript("Abling 2 vedur|all enfris coordinfe unce|Vectr uperting"))
+        #expect(decision.needsReview)
+        #expect(!decision.shouldEscalate)
+        #expect(decision.reasons.contains { $0.contains("disabled") })
+    }
+
+    @Test("escalationMode wins over the legacy boolean, which still works alone")
+    func modeResolutionIsBackwardCompatible() {
+        var config = InkstoneConfig.default
+        #expect(config.resolvedEscalationMode == .off)
+
+        config.cloudEscalationEnabled = true
+        #expect(config.resolvedEscalationMode == .lowConfidence)
+
+        config.escalationMode = "always"
+        #expect(config.resolvedEscalationMode == .always)
+
+        config.escalationMode = "nonsense"
+        #expect(config.resolvedEscalationMode == .lowConfidence, "falls back to the boolean")
+    }
+}
+
+@Suite("Watermark filtering")
+struct WatermarkTests {
+
+    private var composer: NoteComposer { NoteComposer(config: .default) }
+
+    @Test("The GoodNotes watermark is dropped, including OCR mangling of it")
+    func dropsWatermarkVariants() {
+        for variant in ["Made with GoodNotes", "Mado with Goodnotes",
+                        "made with goodnotes", "M2de with G00dnotes", "  Made with Goodnotes  "] {
+            #expect(composer.isIgnored(variant.trimmingCharacters(in: .whitespaces)),
+                    "should have been ignored: \(variant)")
+        }
+    }
+
+    @Test func keepsRealContent() {
+        for keeper in ["Made with love", "Notes on GoodNotes as a product",
+                       "Vectors", "goodnotes is fine but"] {
+            #expect(!composer.isIgnored(keeper), "should have been kept: \(keeper)")
+        }
+    }
+
+    @Test("A malformed user pattern is skipped rather than crashing the run")
+    func malformedPatternIsIgnored() {
+        var config = InkstoneConfig.default
+        config.ignoreLinePatterns = ["[unclosed", "^drop me$"]
+        let composer = NoteComposer(config: config)
+        #expect(composer.isIgnored("drop me"))
+        #expect(!composer.isIgnored("keep me"))
+    }
+
+    @Test func watermarkIsStrippedFromThePageBody() {
+        let transcript = PageTranscript(
+            pageIndex: 0,
+            lines: [Fixtures.line("Real content here", y: 0.1),
+                    Fixtures.line("Made with Goodnotes", y: 0.95)],
+            source: .vision)
+        let body = composer.pageBody(transcript)
+        #expect(body == "Real content here", "\(body)")
+    }
+
+    @Test("The watermark is stripped from cloud transcriptions too")
+    func watermarkStrippedFromVLMOutput() {
+        let transcript = PageTranscript(
+            pageIndex: 0, lines: [], source: .vlm,
+            vlmMarkdown: "# Vectors\n\nSome real notes\n\nMade with GoodNotes")
+        #expect(composer.pageBody(transcript) == "# Vectors\n\nSome real notes")
+    }
+}
+
+@Suite("Diagram candidate filtering")
+struct DiagramFilterTests {
+
+    @Test("A sliver is rejected: one real run produced a 126x2452 crop")
+    func rejectsExtremeAspectRatios() {
+        var extractor = DiagramExtractor()
+        extractor.maxAspectRatio = 8
+        // 126 x 2452 is roughly 1:19.
+        #expect(19.0 > extractor.maxAspectRatio)
+        // And a squarish diagram is kept.
+        #expect(360.0 / 246.0 < extractor.maxAspectRatio)
     }
 }

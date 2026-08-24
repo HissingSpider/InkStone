@@ -45,7 +45,17 @@ public struct InkstoneConfig: Codable, Sendable {
 
     /// Master switch for cloud escalation. When false, low-confidence pages are
     /// still written, flagged with `needs_review: true` in frontmatter.
+    ///
+    /// Kept for configs written before `escalationMode` existed; the mode wins
+    /// when both are present.
     public var cloudEscalationEnabled: Bool
+
+    /// Which pages go to the cloud model: `off`, `lowConfidence`, or `always`.
+    ///
+    /// Use `always` when Vision cannot read your hand at all. Gating relies on
+    /// signals derived from an OCR pass that is wrong throughout, so it will
+    /// wave through pages that are quietly garbage.
+    public var escalationMode: String?
 
     /// Anthropic model used for escalated pages.
     public var vlmModel: String
@@ -75,6 +85,12 @@ public struct InkstoneConfig: Codable, Sendable {
     /// Tags added to the frontmatter of every generated note.
     public var defaultTags: [String]
 
+    /// Regular expressions matched against each transcribed line; anything that
+    /// matches is dropped. Defaults to the GoodNotes free-tier watermark, which
+    /// otherwise lands on every page of every note. Matching is case-insensitive
+    /// and tolerant of OCR slips in the watermark itself.
+    public var ignoreLinePatterns: [String]
+
     public static let `default` = InkstoneConfig(
         inboxPath: "~/Library/CloudStorage/GoogleDrive/My Drive/GoodNotes",
         vaultPath: "~/Obsidian/Vault",
@@ -86,13 +102,15 @@ public struct InkstoneConfig: Codable, Sendable {
         customWords: [],
         escalationThreshold: 0.55,
         cloudEscalationEnabled: false,
+        escalationMode: nil,
         vlmModel: "claude-opus-5",
         apiKeyEnvVar: "ANTHROPIC_API_KEY",
         minDiagramAreaFraction: 0.01,
         diagramCropPadding: 12,
         diagramExtractionEnabled: true,
         notebookRouting: [:],
-        defaultTags: ["inkstone", "handwritten"]
+        defaultTags: ["inkstone", "handwritten"],
+        ignoreLinePatterns: [#"^\s*m[a2o]d[eo]\s+w[il]th\s+g[o0]{2}dn[o0]tes\s*$"#]
     )
 }
 
@@ -140,6 +158,13 @@ extension InkstoneConfig {
     public var vaultURL: URL { Self.expand(vaultPath) }
     public var notesURL: URL { vaultURL.appendingPathComponent(notesSubfolder) }
     public var attachmentsURL: URL { vaultURL.appendingPathComponent(attachmentsSubfolder) }
+
+    /// The escalation mode actually in force, reconciling the newer
+    /// `escalationMode` with the older `cloudEscalationEnabled` boolean.
+    public var resolvedEscalationMode: EscalationMode {
+        if let escalationMode, let mode = EscalationMode(rawValue: escalationMode) { return mode }
+        return cloudEscalationEnabled ? .lowConfidence : .off
+    }
 
     static func expand(_ path: String) -> URL {
         URL(fileURLWithPath: NSString(string: path).expandingTildeInPath).standardizedFileURL

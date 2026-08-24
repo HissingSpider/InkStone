@@ -28,7 +28,7 @@ public struct VLMClient: Sendable {
     public static func make(config: InkstoneConfig,
                             environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> VLMClient? {
-        guard config.cloudEscalationEnabled else { return nil }
+        guard config.resolvedEscalationMode != .off else { return nil }
         guard let key = environment[config.apiKeyEnvVar], !key.isEmpty else {
             log.warn("cloud escalation enabled but \(config.apiKeyEnvVar) is unset")
             return nil

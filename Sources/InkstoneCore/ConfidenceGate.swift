@@ -1,37 +1,65 @@
 import Foundation
 
+/// When a page should be sent to the cloud model.
+public enum EscalationMode: String, Codable, Sendable {
+    /// Never. Weak pages are still written, flagged `needs_review`.
+    case off
+    /// Only pages the gate judges unreliable. The sensible default once a key
+    /// is configured: it pays for the pages that need it and no others.
+    case lowConfidence
+    /// Every page with meaningful content.
+    ///
+    /// For handwriting Vision simply cannot read, gating is false economy — the
+    /// gate's own signals are derived from an OCR pass that is wrong throughout,
+    /// so it will wave through pages that are quietly garbage. Per-page hash
+    /// caching keeps the standing cost to genuinely new pages.
+    case always
+}
+
 /// Why a page was — or was not — sent to the cloud model.
 public struct EscalationDecision: Sendable, Equatable {
     public var shouldEscalate: Bool
     /// Blended 0...1 quality score. Lower is worse.
     public var score: Double
     public var reasons: [String]
+    /// True when the local transcription should not be trusted, whether or not
+    /// escalation is available to rescue it.
+    public var needsReview: Bool
 }
 
 /// Decides which pages local OCR handled badly enough to be worth paying for.
 ///
-/// Vision's own confidence is necessary but not sufficient. It reports high
-/// confidence on a page it barely read, because it is confident about the six
-/// words it did find and silent about the rest. So the gate blends three
-/// signals: how sure Vision was, how much of the page it left unread, and how
-/// much of what it returned looks like garbage rather than language.
+/// Vision's own confidence is necessary but nowhere near sufficient. It reports
+/// high confidence on a page it barely read, because it is confident about the
+/// six words it did find and silent about the rest — and it reports high
+/// confidence on words it got wrong, because every glyph it chose was a
+/// plausible letter. So the gate blends four independent signals, and the
+/// lexical one is the only one that can tell "Adding 2 vectors" from
+/// "Abling 2 vedur".
 public struct ConfidenceGate: Sendable {
 
     public var threshold: Double
-    public var enabled: Bool
+    public var mode: EscalationMode
+    public var lexicon: Lexicon
 
     /// Pages with fewer characters than this are treated as blank, not as
     /// failures — a divider page should never cost an API call.
     public var blankPageCharacterFloor = 12
 
-    public init(config: InkstoneConfig) {
+    /// Above this share of unrecognisable words, the page is not language.
+    public var unknownWordThreshold = 0.40
+
+    public init(config: InkstoneConfig, lexicon: Lexicon = .system) {
         self.threshold = config.escalationThreshold
-        self.enabled = config.cloudEscalationEnabled
+        self.mode = config.resolvedEscalationMode
+        self.lexicon = lexicon
     }
 
-    public init(threshold: Double = 0.55, enabled: Bool = true) {
+    public init(threshold: Double = 0.55, mode: EscalationMode = .lowConfidence,
+                lexicon: Lexicon = .system) {
         self.threshold = threshold
-        self.enabled = enabled
+        self.mode = mode
+        self.lexicon = lexicon
     }
 
     /// `inkCoverage` is the share of the page covered in ink, from the diagram
@@ -42,7 +70,8 @@ public struct ConfidenceGate: Sendable {
 
         guard transcript.characterCount >= blankPageCharacterFloor else {
             return EscalationDecision(shouldEscalate: false, score: 1.0,
-                                      reasons: ["page is blank or near-blank"])
+                                      reasons: ["page is blank or near-blank"],
+                                      needsReview: false)
         }
 
         let confidence = transcript.confidence
@@ -64,6 +93,18 @@ public struct ConfidenceGate: Sendable {
             reasons.append(String(format: "%.0f%% of characters are not letters or digits", garbage * 100))
         }
 
+        // The signal the others cannot provide: is this language at all?
+        let text = transcript.lines.map(\.text).joined(separator: " ")
+        let unknownRatio = lexicon.unknownWordRatio(of: text)
+        var lexicalScore = 1.0
+        if let unknownRatio {
+            lexicalScore = max(0, 1 - unknownRatio / unknownWordThreshold * 0.5)
+            if unknownRatio > unknownWordThreshold {
+                reasons.append(String(format: "%.0f%% of words are not recognisable words",
+                                      unknownRatio * 100))
+            }
+        }
+
         // Lots of ink, very little text: Vision looked at the page and mostly
         // gave up. This is the signal that catches dense cursive.
         var coverageScore = 1.0
@@ -75,19 +116,29 @@ public struct ConfidenceGate: Sendable {
             }
         }
 
-        let score = 0.5 * confidence
-            + 0.2 * (1 - weakFraction)
-            + 0.15 * (1 - min(garbage / 0.4, 1))
+        let score = 0.35 * confidence
+            + 0.15 * (1 - weakFraction)
+            + 0.10 * (1 - min(garbage / 0.4, 1))
             + 0.15 * coverageScore
+            + 0.25 * lexicalScore
 
-        let shouldEscalate = enabled && (score < threshold || !reasons.isEmpty)
-        if !enabled && !reasons.isEmpty {
+        let needsReview = score < threshold || !reasons.isEmpty
+
+        let shouldEscalate: Bool
+        switch mode {
+        case .off: shouldEscalate = false
+        case .lowConfidence: shouldEscalate = needsReview
+        case .always: shouldEscalate = true
+        }
+
+        if mode == .off && needsReview {
             reasons.append("cloud escalation disabled — flagged for review instead")
         }
         return EscalationDecision(
             shouldEscalate: shouldEscalate,
             score: (score * 1000).rounded() / 1000,
-            reasons: reasons)
+            reasons: reasons,
+            needsReview: needsReview)
     }
 
     /// Share of characters that are neither letters, digits, nor ordinary

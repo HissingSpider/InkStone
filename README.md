@@ -73,7 +73,7 @@ created: 2026-08-24
 updated: 2026-08-24
 transcriber: inkstone
 ocr: mixed
-mean_confidence: 0.88
+quality: 0.88
 needs_review: true
 low_confidence_pages: [7]
 tags: [inkstone, handwritten]
