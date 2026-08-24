@@ -4,6 +4,14 @@ import Foundation
 public struct PipelineOptions: Sendable {
     /// Ignore cached hashes and re-transcribe everything.
     public var reprocessAll = false
+    /// Rebuild every note from the page cache without re-transcribing.
+    ///
+    /// The document-level hash skip is what makes a steady-state run nearly
+    /// free, but it assumes the notes it produced last time are still in the
+    /// vault. They may not be — the vault moved, a note was deleted, or the
+    /// granularity changed. This forces composition while keeping OCR and any
+    /// API spend at zero.
+    public var rewrite = false
     /// Overwrite notes even when they look hand-edited.
     public var force = false
     /// Report what would happen without touching the vault or the state store.
@@ -133,7 +141,7 @@ public final class Pipeline: @unchecked Sendable {
         let path = url.resolvingSymlinksInPath().path
         let fileHash = try Hashing.sha256(fileAt: url)
 
-        if !options.reprocessAll, try state.documentHash(path: path) == fileHash {
+        if !options.reprocessAll, !options.rewrite, try state.documentHash(path: path) == fileHash {
             log.debug("unchanged, skipping: \(url.lastPathComponent)")
             return
         }
@@ -158,6 +166,15 @@ public final class Pipeline: @unchecked Sendable {
                     confidence: cached.confidence,
                     needsReview: cached.needsReview,
                     source: cached.escalated ? .vlm : .vision))
+
+                // A cached page still embeds images. If those files went missing
+                // — vault moved, attachments deleted — re-cut them from their
+                // stored rectangles. Local work only; nothing is re-transcribed.
+                if !options.dryRun, !cached.diagrams.isEmpty {
+                    let restored = try restoreDiagrams(
+                        cached.diagrams, renderer: renderer, pageIndex: index)
+                    result.diagramsExtracted += restored
+                }
                 continue
             }
 
@@ -210,6 +227,27 @@ public final class Pipeline: @unchecked Sendable {
             try state.recordDocument(path: path, baseName: notebook,
                                      fileHash: fileHash, pageCount: renderer.pageCount)
         }
+    }
+
+    /// Repairs missing attachment files for an otherwise cached page.
+    private func restoreDiagrams(
+        _ crops: [DiagramCrop], renderer: PDFPageRenderer, pageIndex: Int
+    ) throws -> Int {
+        let anyMissing = crops.contains {
+            !FileManager.default.fileExists(
+                atPath: config.attachmentsURL.appendingPathComponent($0.fileName).path)
+        }
+        // The common case is that everything is present, and checking file
+        // existence is far cheaper than rendering the page to find out.
+        guard anyMissing else { return 0 }
+
+        let rendered = try renderer.render(pageIndex: pageIndex, dpi: config.renderDPI)
+        let restored = try extractor.restore(
+            crops, from: rendered, attachmentsURL: config.attachmentsURL)
+        if restored > 0 {
+            log.info("restored \(restored) missing diagram(s) on page \(pageIndex + 1)")
+        }
+        return restored
     }
 
     // MARK: One page
@@ -289,6 +327,51 @@ public final class Pipeline: @unchecked Sendable {
 
     // MARK: Inbox
 
+    /// Confirms the inbox is genuinely readable, within a bounded time.
+    ///
+    /// Two failure modes make this necessary, and both are invisible without it.
+    /// A launchd agent has no Full Disk Access by default, so a cloud-synced
+    /// folder under ~/Library/CloudStorage returns "Operation not permitted" —
+    /// and because that path is served by a File Provider extension, the call
+    /// can block indefinitely rather than returning the error. A nightly run
+    /// that hangs forever is worse than one that fails: it leaves no log, never
+    /// completes, and quietly stops happening.
+    public static func checkInboxAccess(_ url: URL, timeout: TimeInterval = 15) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        // `nonisolated(unsafe)` is sound here: the worker writes `failure`
+        // exactly once before signalling, and nothing reads it until the wait
+        // returns successfully.
+        nonisolated(unsafe) var failure: Error?
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { _ = try FileManager.default.contentsOfDirectory(atPath: url.path) }
+            catch { failure = error }
+            semaphore.signal()
+        }
+
+        guard semaphore.wait(timeout: .now() + timeout) == .success else {
+            throw InkstoneError.io("""
+                timed out reading \(url.path).
+
+                This usually means the process lacks Full Disk Access. Grant it in \
+                System Settings → Privacy & Security → Full Disk Access — add \
+                Inkstone.app, and your terminal if you run the CLI by hand.
+                """)
+        }
+        if let failure = failure as NSError?,
+           failure.domain == NSCocoaErrorDomain,
+           failure.code == NSFileReadNoPermissionError || failure.code == 257 {
+            throw InkstoneError.io("""
+                not permitted to read \(url.path).
+
+                Grant Full Disk Access in System Settings → Privacy & Security → \
+                Full Disk Access, and add Inkstone.app. Scheduled runs get no \
+                permission prompt of their own, so this has to be granted by hand.
+                """)
+        }
+        if let failure { throw InkstoneError.io("cannot read \(url.path): \(failure)") }
+    }
+
     /// Every PDF under `root`, sorted, ignoring hidden files and Google Drive's
     /// not-yet-downloaded placeholders (which are real files of near-zero size
     /// and would otherwise fail to open on every run).
@@ -297,6 +380,7 @@ public final class Pipeline: @unchecked Sendable {
         guard fm.fileExists(atPath: root.path) else {
             throw InkstoneError.io("inbox does not exist: \(root.path)")
         }
+        try checkInboxAccess(root)
         guard let enumerator = fm.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],

@@ -19,6 +19,7 @@ func loadConfig() throws -> (InkstoneConfig, URL) {
 func makeOptions() -> PipelineOptions {
     var options = PipelineOptions()
     options.reprocessAll = arguments.has("all")
+    options.rewrite = arguments.has("rewrite")
     options.force = arguments.has("force")
     options.dryRun = arguments.has("dry-run")
     options.only = arguments.list("file").map {
@@ -91,7 +92,7 @@ func commandRun() async throws {
                 Output.print(Output.dim("             transcription written to \(sidecar.path)"))
             }
         }
-        for error in result.errors { Output.print(Output.red("  \(error)")) }
+        for error in result.errors { Output.print(Output.red("  \(Output.oneLine(error))")) }
     }
     if !result.succeeded { exit(2) }
 }
@@ -100,6 +101,33 @@ func commandWatch() async throws {
     let (config, _) = try loadConfig()
     let state = try StateStore()
     log.attachFile()
+
+    // Wait for the inbox to become readable rather than exiting.
+    //
+    // The usual reason it is not is a missing Full Disk Access grant, which only
+    // a human can fix. Exiting would hand the problem to launchd's KeepAlive,
+    // which would respawn this process every thirty seconds forever, burning CPU
+    // and filling the log with the same error. Waiting here means one quiet
+    // process that starts working by itself the moment permission is granted.
+    var delay: UInt64 = 30
+    var complainedAbout: String?
+    while true {
+        do {
+            try Pipeline.checkInboxAccess(config.inboxURL)
+            if complainedAbout != nil { log.info("inbox is readable again; resuming") }
+            break
+        } catch {
+            let message = "\(error)"
+            // Log the first occurrence and any change, not every retry.
+            if complainedAbout != message {
+                log.error(message)
+                log.info("retrying every \(delay)s until this is fixed")
+                complainedAbout = message
+            }
+            try await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            delay = min(delay * 2, 900)
+        }
+    }
 
     // A resident process must not fall behind while it was not running, so do a
     // full pass on startup before settling into event-driven mode.
@@ -185,13 +213,21 @@ func commandStatus() throws {
     let formatter = DateFormatter()
     formatter.dateFormat = "MMM d HH:mm"
     for run in runs {
-        let status = run.status == "ok" ? Output.green("ok   ") : Output.red("error")
+        let status: String
+        switch run.status {
+        case "ok": status = Output.green("ok     ")
+        case "running": status = Output.dim("running")
+        case "interrupted": status = Output.yellow("stopped")
+        default: status = Output.red("error  ")
+        }
         var line = "  \(formatter.string(from: run.startedAt))  \(status)  "
             + "\(run.pagesProcessed) pages, \(run.notesWritten) notes"
         if run.pagesEscalated > 0 { line += ", \(run.pagesEscalated) escalated" }
         if run.notesSkipped > 0 { line += ", \(run.notesSkipped) protected" }
         Output.print(line)
-        if let error = run.errorMessage { Output.print(Output.dim("       \(error)")) }
+        if let error = run.errorMessage {
+            Output.print(Output.dim("       \(Output.oneLine(error))"))
+        }
     }
 }
 
@@ -218,7 +254,7 @@ func commandDoctor() throws {
         }
         Output.print("\(symbol) \(Output.bold(check.title.padding(toLength: max(check.title.count, 16), withPad: " ", startingAt: 0)))  \(check.detail)")
         if let remedy = check.remedy {
-            Output.print("  \(Output.dim("→ \(remedy)"))")
+            Output.print("  \(Output.dim("→ \(Output.oneLine(remedy))"))")
         }
     }
 
@@ -340,7 +376,8 @@ func commandHelp() {
       version           Print the version
 
     \(Output.bold("RUN OPTIONS"))
-      --all             Ignore caches; re-transcribe every page
+      --all             Ignore caches; re-transcribe every page (costs API calls)
+      --rewrite         Rebuild notes from cache; no re-transcription, no cost
       --force           Overwrite notes even if they look hand-edited
       --dry-run         Report what would happen; write nothing
       --file <path>     Only this PDF (repeatable)

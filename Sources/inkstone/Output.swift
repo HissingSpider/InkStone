@@ -18,6 +18,17 @@ enum Output {
     static func yellow(_ text: String) -> String { style(text, "33") }
     static func red(_ text: String) -> String { style(text, "31") }
 
+    /// Collapses a multi-line message onto one line.
+    ///
+    /// Errors carry paragraph-length remedies, which read well in a log file and
+    /// wreck a column-aligned terminal report.
+    static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     static func json(_ object: Any) {
         guard let data = try? JSONSerialization.data(
             withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),

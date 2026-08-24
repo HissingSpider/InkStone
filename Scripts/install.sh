@@ -4,7 +4,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPS="${INKSTONE_APP_DIR:-$HOME/Applications}"
-BIN_DIR="${INKSTONE_BIN_DIR:-/usr/local/bin}"
+# /usr/local/bin needs sudo on a stock Mac, and ~/.local/bin is already on PATH
+# for most shells, so prefer it unless the caller says otherwise.
+if [ -n "${INKSTONE_BIN_DIR:-}" ]; then
+    BIN_DIR="$INKSTONE_BIN_DIR"
+elif [ -w /usr/local/bin ]; then
+    BIN_DIR=/usr/local/bin
+else
+    BIN_DIR="$HOME/.local/bin"
+fi
 
 "$ROOT/Scripts/build-app.sh" release
 

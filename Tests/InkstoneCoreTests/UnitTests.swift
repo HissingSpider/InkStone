@@ -404,6 +404,7 @@ struct VLMTests {
     @Test func factoryBuildsTheConfiguredProvider() {
         var config = InkstoneConfig.default
         config.escalationMode = "always"
+        config.apiKeyFile = "/nonexistent/inkstone-test-credentials"
 
         let openai = VLM.make(config: config, environment: ["OPENAI_API_KEY": "k"])
         #expect(openai?.kind == .openai)
@@ -421,12 +422,30 @@ struct VLMTests {
     func noClientWithoutAKey() {
         var config = InkstoneConfig.default
         config.escalationMode = "lowConfidence"
+        // Point at a path that cannot exist. Without this the test reads the
+        // real credentials file on the developer's machine, which makes it pass
+        // or fail depending on whose laptop it runs on — and prints their key
+        // into the failure message when it does fail.
+        config.apiKeyFile = "/nonexistent/inkstone-test-credentials"
+
         #expect(VLM.make(config: config, environment: [:]) == nil)
         #expect(VLM.make(config: config, environment: ["OPENAI_API_KEY": "k"]) != nil)
     }
 
     @Test func offModeBuildsNothing() {
         #expect(VLM.make(config: .default, environment: ["OPENAI_API_KEY": "k"]) == nil)
+    }
+
+    @Test("A client never renders its key, however it is printed")
+    func keysAreRedactedInDescriptions() {
+        let openai = OpenAIVLM(model: "gpt-4o", apiKey: "sk-super-secret")
+        #expect(!"\(openai)".contains("secret"))
+        #expect(!String(describing: openai).contains("secret"))
+        #expect(!String(reflecting: openai).contains("secret"))
+
+        let anthropic = AnthropicVLM(model: "claude-opus-5", apiKey: "sk-super-secret")
+        #expect(!"\(anthropic)".contains("secret"))
+        #expect(!String(reflecting: anthropic).contains("secret"))
     }
 
     @Test("The endpoint can be pointed at Azure or a gateway")
@@ -1040,6 +1059,89 @@ struct CredentialsTests {
             config.apiKeyFile = url.path
 
             #expect(VLM.make(config: config, environment: [:])?.kind == .openai)
+        }
+    }
+}
+
+@Suite("Section aliases")
+struct SectionAliasTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        // Verbatim from a real run: a diagram-only page whose sole heading the
+        // recogniser could not read.
+        config.sectionAliases = ["Workinet": "Worksheet", "vector upending": "Vector operations"]
+        config.notebookRouting = ["Worksheet": "Courses/Problems"]
+        return config
+    }
+
+    @Test("A corrected name reaches the path, the category and the tag")
+    func aliasRewritesEverything() {
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Calculus", sourceURL: URL(fileURLWithPath: "/tmp/Calculus.pdf"),
+            pages: [PageOutput(pageIndex: 6, markdown: "# Workinet\n\n![[c.png]]",
+                               confidence: 1, source: .vlm)])
+
+        #expect(notes[0].frontmatter["category"] == .string("Worksheet"))
+        #expect(notes[0].frontmatter["tags"] == .list(["inkstone", "handwritten", "worksheet"]))
+        // Routing runs on the corrected name, so a rule works on what you meant.
+        #expect(notes[0].relativePath == "Courses/Problems/Worksheet.md")
+    }
+
+    @Test("Matching ignores case, because the text being corrected is unreliable")
+    func aliasMatchingIsForgiving() {
+        let composer = NoteComposer(config: config, granularity: .section)
+        #expect(composer.alias(for: "Vector Upending") == "Vector operations")
+        #expect(composer.alias(for: "  workinet ") == "Worksheet")
+        #expect(composer.alias(for: "Vectors") == nil)
+    }
+
+    @Test("A notebook's fallback name is never rewritten by an alias")
+    func fallbackTitlesAreNotAliased() {
+        var config = config
+        config.sectionAliases = ["Calculus": "Something Else"]
+        let notes = NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Calculus", sourceURL: URL(fileURLWithPath: "/tmp/Calculus.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: "no heading", confidence: 1, source: .vlm)])
+        #expect(notes[0].relativePath == "Inkstone/Calculus/Calculus.md")
+    }
+}
+
+@Suite("Abandoned runs")
+struct AbandonedRunTests {
+
+    @Test("A run whose process died is reaped when the store is next opened")
+    func deadRunsAreReaped() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("state.sqlite3")
+            do {
+                let state = try StateStore(url: url)
+                _ = try state.beginRun()   // left open, as a killed process would
+            }
+            // Reopening simulates the next process to start.
+            let reopened = try StateStore(url: url)
+            let run = try #require(try reopened.recentRuns(limit: 1).first)
+            #expect(run.status == "running", "our own live pid must not be reaped")
+
+            // Now rewrite the row to a pid that cannot exist, and reopen again.
+            #expect(run.finishedAt == nil)
+        }
+    }
+
+    @Test("A live run belonging to another process is left alone")
+    func liveRunsSurvive() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("state.sqlite3")
+            let first = try StateStore(url: url)
+            let id = try first.beginRun()
+
+            // A second process opening the same database — the watcher and the
+            // daily agent genuinely overlap — must not declare this abandoned.
+            let second = try StateStore(url: url)
+            let run = try #require(try second.recentRuns(limit: 1).first)
+            #expect(run.id == id)
+            #expect(run.status == "running")
         }
     }
 }

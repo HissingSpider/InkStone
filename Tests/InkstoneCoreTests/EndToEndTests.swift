@@ -453,3 +453,92 @@ struct DryRunTests {
                 "dry run must not appear in run history")
     }
 }
+
+@Suite("Rewrite from cache", .serialized)
+struct RewriteTests {
+
+    @Test("--rewrite rebuilds a deleted note without re-transcribing it")
+    func rewritesWithoutReprocessing() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("inkstone-rewrite-\(UUID().uuidString)")
+        let inbox = root.appendingPathComponent("Inbox")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = InkstoneConfig.default
+        config.inboxPath = inbox.path
+        config.vaultPath = root.appendingPathComponent("Vault").path
+        config.renderDPI = 150
+
+        try Fixtures.makePDF(at: inbox.appendingPathComponent("Log.pdf"), title: "Log",
+                             pages: [.init(lines: ["First entry here"])])
+        let state = try StateStore(url: root.appendingPathComponent("state.sqlite3"))
+
+        let first = await Pipeline(config: config, state: state).run()
+        #expect(first.pagesProcessed == 1)
+
+        // Simulate the note going missing — vault moved, file deleted, whatever.
+        let note = config.notesURL.appendingPathComponent("Log.md")
+        try FileManager.default.removeItem(at: note)
+
+        // A normal run skips the whole document on its unchanged file hash, so
+        // the missing note stays missing.
+        let skipped = await Pipeline(config: config, state: state).run()
+        #expect(skipped.notesWritten == 0)
+        #expect(!FileManager.default.fileExists(atPath: note.path))
+
+        var options = PipelineOptions()
+        options.rewrite = true
+        let rebuilt = await Pipeline(config: config, state: state, options: options).run()
+
+        #expect(rebuilt.notesWritten == 1)
+        // The point of the flag: nothing was re-transcribed, so nothing was paid for.
+        #expect(rebuilt.pagesProcessed == 0)
+        #expect(rebuilt.pagesCached == 1)
+        #expect(FileManager.default.fileExists(atPath: note.path))
+    }
+}
+
+@Suite("Attachment repair", .serialized)
+struct AttachmentRepairTests {
+
+    @Test("Deleted diagram files are re-cut from cache, without re-transcribing")
+    func restoresMissingAttachments() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("inkstone-repair-\(UUID().uuidString)")
+        let inbox = root.appendingPathComponent("Inbox")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = InkstoneConfig.default
+        config.inboxPath = inbox.path
+        config.vaultPath = root.appendingPathComponent("Vault").path
+        config.renderDPI = 150
+
+        try Fixtures.makePDF(at: inbox.appendingPathComponent("Sketch.pdf"), title: "Sketch",
+                             pages: [.init(lines: ["A labelled drawing"], includeDiagram: true)])
+        let state = try StateStore(url: root.appendingPathComponent("state.sqlite3"))
+
+        let first = await Pipeline(config: config, state: state).run()
+        #expect(first.diagramsExtracted >= 1)
+
+        let attachments = config.attachmentsURL
+        let before = try FileManager.default.contentsOfDirectory(atPath: attachments.path)
+        #expect(!before.isEmpty)
+
+        // Someone deletes the attachments folder. The notes still reference it.
+        try FileManager.default.removeItem(at: attachments)
+
+        var options = PipelineOptions()
+        options.rewrite = true
+        let repaired = await Pipeline(config: config, state: state, options: options).run()
+
+        // Nothing re-transcribed, so nothing was paid for — but the files are back.
+        #expect(repaired.pagesProcessed == 0)
+        #expect(repaired.pagesCached == 1)
+        #expect(repaired.diagramsExtracted == before.count)
+
+        let after = try FileManager.default.contentsOfDirectory(atPath: attachments.path)
+        #expect(Set(after) == Set(before))
+    }
+}

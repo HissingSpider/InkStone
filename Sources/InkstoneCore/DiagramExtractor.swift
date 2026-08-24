@@ -120,6 +120,34 @@ public struct DiagramExtractor: Sendable {
         return DiagramScan(crops: crops, inkCoverage: scan.inkCoverage)
     }
 
+    /// Re-cuts crops the pipeline already knows about, from their stored pixel
+    /// rectangles.
+    ///
+    /// Rendering and cropping are local and free; only recognition costs money.
+    /// So a vault whose attachment files went missing can be repaired exactly,
+    /// without re-transcribing a single page.
+    public func restore(
+        _ crops: [DiagramCrop], from page: RenderedPage, attachmentsURL: URL
+    ) throws -> Int {
+        let missing = crops.filter {
+            !FileManager.default.fileExists(
+                atPath: attachmentsURL.appendingPathComponent($0.fileName).path)
+        }
+        guard !missing.isEmpty else { return 0 }
+
+        try FileManager.default.createDirectory(at: attachmentsURL, withIntermediateDirectories: true)
+        let bounds = CGRect(x: 0, y: 0, width: page.pixelWidth, height: page.pixelHeight)
+
+        var restored = 0
+        for crop in missing {
+            let rect = crop.pixelRect.intersection(bounds)
+            guard !rect.isEmpty, let image = page.image.cropping(to: rect) else { continue }
+            try Self.writePNG(image, to: attachmentsURL.appendingPathComponent(crop.fileName))
+            restored += 1
+        }
+        return restored
+    }
+
     // MARK: Detection
 
     public struct Located: Sendable {

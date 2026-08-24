@@ -58,7 +58,20 @@ costs a handful of file hashes and nothing else.
 The menu-bar app shows the last run, surfaces anything `doctor` would complain
 about, and has a **Process now** button for when you do not want to wait.
 
-Remove them with `inkstone uninstall-agent`.
+**Grant Full Disk Access.** If your inbox is under `~/Library/CloudStorage`,
+`~/Documents`, `~/Desktop` or iCloud Drive, the agents cannot read it until you
+add `Inkstone.app` in System Settings → Privacy & Security → Full Disk Access.
+Scheduled jobs get no permission prompt of their own, so this has to be done by
+hand — and it is invisible from a terminal, which already has permission.
+`inkstone doctor` warns about it once agents are installed.
+
+Verify the scheduled path actually works, rather than assuming:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.inkstone.daily && inkstone status
+```
+
+Remove the agents with `inkstone uninstall-agent`.
 
 ---
 
@@ -203,6 +216,11 @@ shorthand.
 | `inkstone set-key` | Store an API key where the launchd agents can read it |
 | `inkstone reset` | Forget cached hashes so the next run redoes everything |
 
+`--rewrite` rebuilds notes from the page cache without re-transcribing, which
+costs nothing. Use it after moving the vault, changing `--granularity`, or
+deleting notes you want back. It also re-cuts any diagram images that went
+missing, from their stored crop rectangles.
+
 Useful flags: `--dry-run` (write nothing), `--all` (ignore caches), `--file`
 (one notebook), `--force` (overwrite hand-edited notes), `--verbose`,
 `--granularity notebook|page|section`.
@@ -283,6 +301,7 @@ to defaults, so a config written by an older version keeps working.
 | `diagramCropPadding` | `12` | Pixels of breathing room around a crop |
 | `notebookRouting` | `{}` | `{"Physics 201": "Courses/Physics"}` — matches notebook *and* section names, prefix match |
 | `defaultTags` | `["inkstone", "handwritten"]` | Added to every note |
+| `sectionAliases` | `{}` | Fix OCR'd section names: `{"Workinet": "Worksheet"}` |
 
 ---
 

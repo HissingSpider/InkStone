@@ -150,6 +150,39 @@ public final class StateStore: @unchecked Sendable {
         // exists, so new columns need adding explicitly.
         try addColumnIfMissing(
             table: "pages", column: "needs_review", definition: "INTEGER NOT NULL DEFAULT 0")
+
+        try addColumnIfMissing(table: "runs", column: "pid", definition: "INTEGER NOT NULL DEFAULT 0")
+        try reapAbandonedRuns()
+    }
+
+    /// Closes out `running` rows whose process is gone.
+    ///
+    /// The PID check matters: the watcher, the daily agent and a hand-run CLI
+    /// all share this database, and more than one can legitimately be running at
+    /// once. Marking every `running` row stale on startup would have one process
+    /// declare another one's live work abandoned.
+    private func reapAbandonedRuns() throws {
+        let candidates = try prepared("SELECT id, pid FROM runs WHERE status = 'running';") {
+            statement -> [(Int64, pid_t)] in
+            var rows: [(Int64, pid_t)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                rows.append((sqlite3_column_int64(statement, 0),
+                             pid_t(sqlite3_column_int64(statement, 1))))
+            }
+            return rows
+        }
+
+        for (id, pid) in candidates {
+            // pid 0 predates this column; treat it as abandoned. Otherwise
+            // signal 0 asks "does this process exist" without touching it.
+            let alive = pid > 0 && kill(pid, 0) == 0
+            guard !alive else { continue }
+            try run("""
+                UPDATE runs SET status = 'interrupted', finished_at = started_at,
+                    error_message = COALESCE(error_message, 'run did not finish')
+                WHERE id = ?;
+                """, [id])
+        }
     }
 
     /// Idempotent `ALTER TABLE … ADD COLUMN`.
@@ -336,7 +369,8 @@ public final class StateStore: @unchecked Sendable {
     // MARK: Runs
 
     public func beginRun() throws -> Int64 {
-        try run("INSERT INTO runs (started_at, status) VALUES (?, 'running');", [Date()])
+        try run("INSERT INTO runs (started_at, status, pid) VALUES (?, 'running', ?);",
+                [Date(), Int(ProcessInfo.processInfo.processIdentifier)])
         lock.lock(); defer { lock.unlock() }
         return sqlite3_last_insert_rowid(db)
     }

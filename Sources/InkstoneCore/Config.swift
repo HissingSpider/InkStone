@@ -99,6 +99,16 @@ public struct InkstoneConfig: Codable, Sendable {
     /// Tags added to the frontmatter of every generated note.
     public var defaultTags: [String]
 
+    /// Corrects section names the recogniser gets wrong, e.g.
+    /// `{"Workinet": "Worksheet"}`.
+    ///
+    /// Section names come from OCR, and a page that is almost entirely diagram
+    /// gives any recogniser almost nothing to read. Renaming the note in
+    /// Obsidian cannot fix it — the next run would recreate the misspelled note
+    /// alongside the renamed one, because the path is derived from the source
+    /// page every time. Correcting the name here fixes it at the source.
+    public var sectionAliases: [String: String]
+
     /// Regular expressions matched against each transcribed line; anything that
     /// matches is dropped. Defaults to the GoodNotes free-tier watermark, which
     /// otherwise lands on every page of every note. Matching is case-insensitive
@@ -126,6 +136,7 @@ public struct InkstoneConfig: Codable, Sendable {
         diagramExtractionEnabled: true,
         notebookRouting: [:],
         defaultTags: ["inkstone", "handwritten"],
+        sectionAliases: [:],
         ignoreLinePatterns: [#"^\s*m[a2o]d[eo]\s+w[il]th\s+g[o0]{2}dn[o0]tes\s*$"#]
     )
 }

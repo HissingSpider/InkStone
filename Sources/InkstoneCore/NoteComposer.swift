@@ -126,7 +126,11 @@ public struct NoteComposer: Sendable {
 
         case .section:
             var used: Set<String> = []
-            return Self.sections(in: pages, fallbackTitle: notebook).map { section in
+            return Self.sections(in: pages, fallbackTitle: notebook).map { rawSection in
+                var section = rawSection
+                if section.isExplicit, let corrected = alias(for: section.title) {
+                    section.title = corrected
+                }
                 // An explicit heading may have its own routing rule; that is the
                 // point of the mode, so it wins over the notebook's rule. Without
                 // one, notes nest under the notebook so two books cannot both
@@ -174,6 +178,18 @@ public struct NoteComposer: Sendable {
             }
         }
         return sections
+    }
+
+    /// The configured correction for an OCR'd section name, if there is one.
+    /// Matching ignores case and surrounding whitespace, because the thing being
+    /// corrected is by definition unreliable text.
+    func alias(for title: String) -> String? {
+        let needle = title.lowercased().trimmingCharacters(in: .whitespaces)
+        for (wrong, right) in config.sectionAliases
+        where wrong.lowercased().trimmingCharacters(in: .whitespaces) == needle {
+            return right
+        }
+        return nil
     }
 
     /// The heading a page opens with, if it opens with one.

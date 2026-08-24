@@ -44,6 +44,7 @@ public struct Doctor: Sendable {
         checks.append(visionCheck())
         checks.append(escalationCheck())
         checks.append(contentsOf: agentChecks())
+        if let access = fullDiskAccessCheck() { checks.append(access) }
         if let unattended = unattendedKeyCheck() { checks.append(unattended) }
         if let state { checks.append(lastRunCheck(state)) }
         return checks
@@ -211,6 +212,33 @@ public struct Doctor: Sendable {
                      detail: "\(config.resolvedProvider.rawValue) \(config.resolvedModel), "
                              + "mode \(mode), key from \(resolution.source)",
                      remedy: nil)
+    }
+
+    /// Warns when the inbox sits somewhere a launchd agent cannot reach.
+    ///
+    /// This check exists because `doctor` normally runs from a terminal, which
+    /// has permissions the scheduled agents do not. Everything looks green while
+    /// the nightly run is failing — or worse, hanging — on a folder it is not
+    /// allowed to read.
+    private func fullDiskAccessCheck() -> Check? {
+        let agentsInstalled = LaunchAgent.isInstalled(label: LaunchAgent.dailyLabel)
+            || LaunchAgent.isInstalled(label: LaunchAgent.watchLabel)
+        guard agentsInstalled else { return nil }
+
+        // The paths macOS puts behind TCC. A launchd agent reaches none of them
+        // without an explicit Full Disk Access grant.
+        let protectedMarkers = ["/Library/CloudStorage", "/Documents", "/Desktop",
+                                "/Downloads", "/Library/Mobile Documents"]
+        let path = config.inboxURL.path
+        guard protectedMarkers.contains(where: { path.contains($0) }) else { return nil }
+
+        return Check(
+            status: .warn, title: "Full Disk Access",
+            detail: "the inbox is in a protected location; agents cannot read it by default",
+            remedy: "System Settings → Privacy & Security → Full Disk Access → add "
+                    + "Inkstone.app. Scheduled runs get no permission prompt of their own. "
+                    + "Verify with: launchctl kickstart -k gui/$(id -u)/\(LaunchAgent.dailyLabel) "
+                    + "then `inkstone status`.")
     }
 
     /// Warns when escalation depends on a key the launchd agents cannot see.

@@ -65,3 +65,14 @@ public struct AnthropicVLM: VLMProvider {
         return VLMTransport.stripCodeFence(text)
     }
 }
+
+extension AnthropicVLM: CustomStringConvertible, CustomDebugStringConvertible {
+    /// Never render the key.
+    ///
+    /// Swift will happily print a struct's stored properties into a log line, a
+    /// crash report or a test-failure message, and a secret that can describe
+    /// itself will eventually describe itself somewhere it should not. This
+    /// closes that off at the type.
+    public var description: String { "AnthropicVLM(model: \(model), key: <redacted>)" }
+    public var debugDescription: String { description }
+}
