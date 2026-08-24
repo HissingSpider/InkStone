@@ -232,9 +232,15 @@ Useful flags: `--dry-run` (write nothing), `--all` (ignore caches), `--file`
 Handwriting apps cap how many notebooks you get, so one book often ends up
 holding several unrelated things. `--granularity section` splits it back apart:
 
-```bash
-inkstone run --granularity section
+```json
+{ "granularity": "section" }
 ```
+
+Set it in config, not only as a flag: the launch agents run a bare `inkstone
+run`, so a flag-only setting means your scheduled runs quietly use a different
+mode from the one you tested with — and produce a second, duplicate set of
+notes alongside the first. The `--granularity` flag still overrides it for
+one-off experiments.
 
 A new section starts at any page whose first line is a heading. Everything
 until the next heading belongs to it, and pages before the first heading stay
@@ -285,6 +291,7 @@ to defaults, so a config written by an older version keeps working.
 | `inboxPath` | detected | Folder the backups sync into; searched recursively |
 | `vaultPath` | detected | Obsidian vault root |
 | `notesSubfolder` | `Inkstone` | Where notes land inside the vault |
+| `granularity` | `notebook` | `notebook`, `page`, or `section` — the agents read this, so set it here rather than only passing `--granularity` |
 | `attachmentsSubfolder` | `Inkstone/attachments` | Where cropped diagrams land |
 | `renderDPI` | `300` | Vision's accuracy plateaus above this |
 | `recognitionLanguages` | `["en-US"]` | Best match first |

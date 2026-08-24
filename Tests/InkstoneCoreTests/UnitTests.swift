@@ -1145,3 +1145,23 @@ struct AbandonedRunTests {
         }
     }
 }
+
+@Suite("Granularity from config")
+struct GranularityConfigTests {
+
+    @Test("Granularity is a config setting, because the agents run a bare `run`")
+    func resolvesFromConfig() {
+        var config = InkstoneConfig.default
+        #expect(config.resolvedGranularity == .notebook)
+
+        config.granularity = "section"
+        #expect(config.resolvedGranularity == .section)
+
+        config.granularity = "page"
+        #expect(config.resolvedGranularity == .page)
+
+        // An unrecognised value falls back rather than failing the run.
+        config.granularity = "chapters"
+        #expect(config.resolvedGranularity == .notebook)
+    }
+}

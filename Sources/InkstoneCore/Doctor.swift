@@ -232,6 +232,15 @@ public struct Doctor: Sendable {
         let path = config.inboxURL.path
         guard protectedMarkers.contains(where: { path.contains($0) }) else { return nil }
 
+        // Don't cry wolf. If the daily agent has actually completed a run, the
+        // grant is in place and repeating the warning only teaches the user to
+        // skim past doctor's output.
+        if LaunchAgent.lastExitWasClean(label: LaunchAgent.dailyLabel) {
+            return Check(status: .pass, title: "Full Disk Access",
+                         detail: "granted — the daily agent last exited cleanly",
+                         remedy: nil)
+        }
+
         return Check(
             status: .warn, title: "Full Disk Access",
             detail: "the inbox is in a protected location; agents cannot read it by default",

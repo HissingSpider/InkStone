@@ -101,6 +101,24 @@ public enum LaunchAgent {
         return result.status == 0
     }
 
+    /// True when launchd recorded a zero exit for this agent's last run.
+    ///
+    /// This is the only cheap way to know whether a scheduled job actually
+    /// worked, as opposed to whether it is installed. A terminal cannot observe
+    /// an agent's permissions directly — it has its own, usually broader ones.
+    public static func lastExitWasClean(label: String) -> Bool {
+        guard let result = try? runLaunchctl(["print", "gui/\(getuid())/\(label)"]),
+              result.status == 0
+        else { return false }
+
+        for line in result.output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("last exit code = ") else { continue }
+            return trimmed.hasSuffix("= 0")
+        }
+        return false
+    }
+
     // MARK: Plist
 
     static func plist(label: String, arguments: [String], extra: String) -> String {

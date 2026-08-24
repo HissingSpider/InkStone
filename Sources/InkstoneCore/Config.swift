@@ -17,6 +17,14 @@ public struct InkstoneConfig: Codable, Sendable {
     /// Subfolder of the vault for generated notes, relative to `vaultPath`.
     public var notesSubfolder: String
 
+    /// How pages are grouped into notes: `notebook`, `page`, or `section`.
+    ///
+    /// This lives in config rather than only on the command line because the
+    /// launch agents run a bare `inkstone run`. A flag-only setting meant the
+    /// scheduled runs silently used a different mode from the one you tested
+    /// with, and produced a second, duplicate set of notes.
+    public var granularity: String?
+
     /// Subfolder of the vault for cropped diagrams, relative to `vaultPath`.
     public var attachmentsSubfolder: String
 
@@ -119,6 +127,7 @@ public struct InkstoneConfig: Codable, Sendable {
         inboxPath: "~/Library/CloudStorage/GoogleDrive/My Drive/GoodNotes",
         vaultPath: "~/Obsidian/Vault",
         notesSubfolder: "Inkstone",
+        granularity: nil,
         attachmentsSubfolder: "Inkstone/attachments",
         renderDPI: 300,
         recognitionLanguages: ["en-US"],
@@ -185,6 +194,11 @@ extension InkstoneConfig {
     public var vaultURL: URL { Self.expand(vaultPath) }
     public var notesURL: URL { vaultURL.appendingPathComponent(notesSubfolder) }
     public var attachmentsURL: URL { vaultURL.appendingPathComponent(attachmentsSubfolder) }
+
+    /// The note granularity in force. Defaults to one note per notebook.
+    public var resolvedGranularity: NoteGranularity {
+        granularity.flatMap { NoteGranularity(rawValue: $0) } ?? .notebook
+    }
 
     /// The credentials file in force, or nil for the default location.
     public var credentialsURL: URL? {

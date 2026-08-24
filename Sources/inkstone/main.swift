@@ -16,8 +16,9 @@ func loadConfig() throws -> (InkstoneConfig, URL) {
     return (try InkstoneConfig.load(from: url), url)
 }
 
-func makeOptions() -> PipelineOptions {
+func makeOptions(_ config: InkstoneConfig) -> PipelineOptions {
     var options = PipelineOptions()
+    options.granularity = config.resolvedGranularity
     options.reprocessAll = arguments.has("all")
     options.rewrite = arguments.has("rewrite")
     options.force = arguments.has("force")
@@ -25,6 +26,7 @@ func makeOptions() -> PipelineOptions {
     options.only = arguments.list("file").map {
         URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
     }
+    // An explicit flag still wins, for one-off experiments.
     if let granularity = arguments.value("granularity"),
        let parsed = NoteGranularity(rawValue: granularity) {
         options.granularity = parsed
@@ -63,7 +65,7 @@ func commandInit() throws {
 func commandRun() async throws {
     let (config, _) = try loadConfig()
     let state = try StateStore()
-    let options = makeOptions()
+    let options = makeOptions(config)
 
     if options.dryRun { Output.print(Output.dim("dry run — nothing will be written")) }
 
@@ -131,7 +133,7 @@ func commandWatch() async throws {
 
     // A resident process must not fall behind while it was not running, so do a
     // full pass on startup before settling into event-driven mode.
-    let startup = Pipeline(config: config, state: state, options: makeOptions())
+    let startup = Pipeline(config: config, state: state, options: makeOptions(config))
     _ = await startup.run()
 
     let quiet = Double(arguments.int("settle") ?? 20)
@@ -144,7 +146,7 @@ func commandWatch() async throws {
                 return
             }
             defer { Task { await running.end() } }
-            var options = makeOptions()
+            var options = makeOptions(config)
             options.only = changed
             _ = await Pipeline(config: config, state: state, options: options).run()
         }
@@ -152,7 +154,17 @@ func commandWatch() async throws {
     try watcher.start()
 
     // Park forever; launchd owns this process's lifetime.
-    dispatchMain()
+    //
+    // Not dispatchMain(): this runs inside the async main's Task, on a
+    // cooperative thread rather than the real main thread, so dispatchMain()
+    // returns immediately instead of parking. The process then fell off the end
+    // of main.swift and exited, launchd's KeepAlive restarted it, and the
+    // watcher respawned every few seconds without ever watching anything.
+    // FolderWatcher drives FSEvents from its own dispatch queue and needs no
+    // run loop here — only for this task never to finish.
+    while !Task.isCancelled {
+        try await Task.sleep(nanoseconds: 3_600 * 1_000_000_000)
+    }
 }
 
 /// Serialises pipeline runs so a burst of file events cannot start two at once.
