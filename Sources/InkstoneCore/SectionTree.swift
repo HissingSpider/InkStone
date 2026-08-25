@@ -51,23 +51,39 @@ extension MarkdownSection {
     /// they end up filed under the marker instead of under the topic they
     /// belong to. Merging such a section into its previous sibling puts both its
     /// content and its children back where they were always meant to be.
-    public func dissolvingContinuations(matching patterns: [NSRegularExpression])
-        -> MarkdownSection {
+    /// `keepTitle` distinguishes the two reasons a heading gets dissolved. A
+    /// continuation marker is scaffolding and is discarded; a phrase wrongly
+    /// promoted to a heading is the writer's own words and is kept as prose.
+    public func dissolvingContinuations(
+        matching patterns: [NSRegularExpression],
+        demoting demoted: [NSRegularExpression] = []
+    ) -> MarkdownSection {
         var result = self
         result.children = []
 
-        for child in children {
-            let resolved = child.dissolvingContinuations(matching: patterns)
-            let isContinuation = resolved.title.map { title in
-                patterns.contains { pattern in
-                    let range = NSRange(title.startIndex..<title.endIndex, in: title)
-                    return pattern.firstMatch(in: title, range: range) != nil
-                }
-            } ?? false
+        func matches(_ title: String, _ set: [NSRegularExpression]) -> Bool {
+            let range = NSRange(title.startIndex..<title.endIndex, in: title)
+            return set.contains { $0.firstMatch(in: title, range: range) != nil }
+        }
 
-            guard isContinuation else {
+        for child in children {
+            var resolved = child.dissolvingContinuations(matching: patterns, demoting: demoted)
+            let title = resolved.title ?? ""
+            let isContinuation = !title.isEmpty && matches(title, patterns)
+            let isDemoted = !title.isEmpty && matches(title, demoted)
+
+            guard isContinuation || isDemoted else {
                 result.children.append(resolved)
                 continue
+            }
+
+            // Put the words back into the prose, unless the model already
+            // repeated them there — which is exactly why the heading looked
+            // spurious in the first place.
+            if isDemoted, !resolved.content.lowercased()
+                .hasPrefix(title.lowercased()) {
+                resolved.content = resolved.content.isEmpty
+                    ? title : title + "\n\n" + resolved.content
             }
 
             // Content is never dropped: it goes to the previous sibling if there

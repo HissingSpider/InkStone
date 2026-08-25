@@ -81,3 +81,43 @@ public enum VLMPrompt {
         return sections.joined(separator: "\n\n")
     }
 }
+
+extension VLMPrompt {
+
+    /// Phrases a model uses when it declines rather than transcribes.
+    ///
+    /// Shown a blank or near-blank page, a model often explains itself instead
+    /// of returning nothing — "I'm unable to transcribe...", "this appears to be
+    /// a blank page". That explanation was being written into the vault as if it
+    /// were the page's contents, which is worse than an empty note: it reads as
+    /// something the user wrote.
+    static let refusalPhrases = [
+        "unable to transcribe", "cannot transcribe", "can't transcribe",
+        "no visible handwriting", "no visible text", "no text is present",
+        "appears to be a blank", "appears to be blank", "is a blank page",
+        "i'm sorry", "i am sorry", "i'm unable", "i am unable",
+        "there is no handwriting", "no discernible",
+    ]
+
+    /// True when `markdown` is the model talking about the page rather than
+    /// transcribing it.
+    ///
+    /// Length and structure guard against false positives: a real transcription
+    /// of a page that happens to contain one of these phrases will be longer, or
+    /// will carry markdown structure, or both. A page whose entire content is an
+    /// apology is not a page anyone wrote.
+    public static func looksLikeRefusal(_ markdown: String) -> Bool {
+        let text = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.count < 400 else { return false }
+
+        let structural = ["#", "-", "*", ">", "|", "$", "!["]
+        let hasStructure = text.split(separator: "\n").contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return structural.contains { trimmed.hasPrefix($0) }
+        }
+        guard !hasStructure else { return false }
+
+        let lowered = text.lowercased()
+        return refusalPhrases.contains { lowered.contains($0) }
+    }
+}

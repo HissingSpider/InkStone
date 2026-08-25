@@ -1479,3 +1479,87 @@ struct ContinuationTests {
         #expect(NoteComposer.tidy("a\n\n---\n\nb") == "a\n\n---\n\nb", "internal rules stay")
     }
 }
+
+@Suite("Model refusals are not transcriptions")
+struct RefusalTests {
+
+    @Test("A model explaining a blank page is recognised as blank")
+    func detectsRefusals() {
+        // Verbatim from a real run, which wrote this into the vault as a note.
+        #expect(VLMPrompt.looksLikeRefusal("""
+            I'm unable to transcribe the content of the page as no visible handwriting or \
+            text is present in the image you provided. It appears to be a blank page \
+            within a notebook.
+            """))
+        #expect(VLMPrompt.looksLikeRefusal("I'm sorry, I cannot transcribe this image."))
+        #expect(VLMPrompt.looksLikeRefusal("This appears to be a blank page."))
+    }
+
+    @Test("A real transcription is never mistaken for a refusal")
+    func doesNotSwallowRealNotes() {
+        #expect(!VLMPrompt.looksLikeRefusal("## Vectors\n\nlength and direction"))
+        #expect(!VLMPrompt.looksLikeRefusal("meeting notes about the blank page problem"))
+        // Structure means someone wrote something, whatever words appear.
+        #expect(!VLMPrompt.looksLikeRefusal("- I'm sorry I missed the meeting"))
+        #expect(!VLMPrompt.looksLikeRefusal(""))
+        // A long passage that merely contains the phrase is real content.
+        #expect(!VLMPrompt.looksLikeRefusal(
+            String(repeating: "no visible text here and much more besides. ", count: 12)))
+    }
+}
+
+@Suite("Demoting false headings")
+struct DemotedHeadingTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        config.ignoredHeadings = [#"^looks like$"#]
+        return config
+    }
+
+    private func compose(_ markdown: String) -> [ComposedNote] {
+        NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Calls", sourceURL: URL(fileURLWithPath: "/tmp/Calls.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: markdown, confidence: 1, source: .vlm)])
+    }
+
+    @Test("The heading goes, the words stay")
+    func demotesWithoutLosingText() {
+        // Verbatim shape from a real page: the model emitted the phrase as both
+        // a heading and the first line of the body.
+        let notes = compose("""
+            ## Looks like
+
+            Looks like
+            LUMIslate
+            ADC quote
+
+            ## Anna Only
+
+            No Linkedin
+            """)
+
+        #expect(!notes.contains { $0.title == "Looks like" })
+        #expect(notes.contains { $0.title == "Anna Only" })
+
+        let kept = notes.map(\.body).joined(separator: "\n")
+        #expect(kept.contains("LUMIslate"))
+        // Not duplicated: the body already began with the phrase.
+        #expect(kept.components(separatedBy: "Looks like").count - 1 == 1)
+    }
+
+    @Test("When the body does not repeat the phrase, it is put back")
+    func restoresTheTextWhenAbsent() {
+        let notes = compose("## Looks like\n\nLUMIslate only")
+        let kept = notes.map(\.body).joined(separator: "\n")
+        #expect(kept.contains("Looks like"))
+        #expect(kept.contains("LUMIslate only"))
+    }
+
+    @Test("Headings not on the list are untouched")
+    func leavesRealHeadingsAlone() {
+        let notes = compose("## Real Topic\n\nbody")
+        #expect(notes.map(\.title) == ["Real Topic"])
+    }
+}

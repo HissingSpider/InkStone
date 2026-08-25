@@ -710,3 +710,46 @@ struct DiagramDiscriminationTests {
         }
     }
 }
+
+@Suite("Refusals do not reach the vault", .serialized)
+struct CachedRefusalTests {
+
+    @Test("A refusal already in the cache is healed without re-transcribing")
+    func healsPoisonedCache() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("inkstone-refusal-\(UUID().uuidString)")
+        let inbox = root.appendingPathComponent("Inbox")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = InkstoneConfig.default
+        config.inboxPath = inbox.path
+        config.vaultPath = root.appendingPathComponent("Vault").path
+        config.renderDPI = 150
+
+        let pdf = inbox.appendingPathComponent("Log.pdf")
+        try Fixtures.makePDF(at: pdf, title: "Log", pages: [.init(lines: ["Real content here"])])
+        let state = try StateStore(url: root.appendingPathComponent("state.sqlite3"))
+        _ = await Pipeline(config: config, state: state).run()
+
+        // Poison the cache the way an earlier version did.
+        let key = pdf.resolvingSymlinksInPath().path
+        var record = try #require(try state.pageRecord(documentPath: key, pageIndex: 0))
+        record.markdown = """
+            I'm unable to transcribe the content of the page as no visible handwriting \
+            or text is present in the image you provided.
+            """
+        record.escalated = true
+        try state.upsertPage(record)
+
+        var options = PipelineOptions()
+        options.rewrite = true
+        options.force = true
+        let result = await Pipeline(config: config, state: state, options: options).run()
+
+        #expect(result.pagesProcessed == 0, "nothing should be re-transcribed")
+        let note = try String(
+            contentsOf: config.notesURL.appendingPathComponent("Log.md"), encoding: .utf8)
+        #expect(!note.contains("unable to transcribe"), "\(note)")
+    }
+}

@@ -316,6 +316,16 @@ orphaned. A heading that just says "Continued" is dissolved into the section
 before it — taking its sub-headings with it, so they are filed under the real
 topic rather than under the marker.
 
+Recognition sometimes promotes an ordinary phrase to a heading because of how it
+was written. List those in `ignoredHeadings` and the promotion is undone; the
+words stay in the note as prose, since they are still what the page says.
+
+Shown a blank page, a vision model often explains itself rather than returning
+nothing — "I'm unable to transcribe…". That explanation is detected and the page
+is recorded as blank, because an apology in your vault reads like something you
+wrote. The check runs on cached pages too, so a note poisoned by an earlier
+version is repaired without paying to transcribe it again.
+
 Each section becomes its own note, categorised:
 
 ```yaml
@@ -362,6 +372,7 @@ to defaults, so a config written by an older version keeps working.
 | `notesSubfolder` | `Inkstone` | Where notes land inside the vault |
 | `sectionDepth` | `3` | Deepest heading level that gets its own note |
 | `continuationHeadings` | `["continued", "more", …]` | Headings meaning "more of the last thing" |
+| `ignoredHeadings` | `[]` | Phrases wrongly promoted to headings; the text is kept as prose |
 | `granularity` | `notebook` | `notebook`, `page`, or `section` — the agents read this, so set it here rather than only passing `--granularity` |
 | `attachmentsSubfolder` | `Inkstone/attachments` | Where cropped diagrams land |
 | `renderDPI` | `300` | Vision's accuracy plateaus above this |

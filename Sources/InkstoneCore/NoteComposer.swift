@@ -176,8 +176,11 @@ public struct NoteComposer: Sendable {
         let continuations = config.continuationHeadings.compactMap {
             try? NSRegularExpression(pattern: $0, options: [.caseInsensitive])
         }
+        let demoted = config.ignoredHeadings.compactMap {
+            try? NSRegularExpression(pattern: $0, options: [.caseInsensitive])
+        }
         let tree = SectionParser.parse(combined)
-            .dissolvingContinuations(matching: continuations)
+            .dissolvingContinuations(matching: continuations, demoting: demoted)
         let nested = folder.isEmpty
             ? Self.safeFileName(notebook)
             : folder.appending("/\(Self.safeFileName(notebook))")

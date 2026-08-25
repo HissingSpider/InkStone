@@ -214,8 +214,12 @@ public final class Pipeline: @unchecked Sendable {
                let cached = try state.pageRecord(documentPath: path, pageIndex: index),
                cached.imageHash == fingerprint {
                 result.pagesCached += 1
+                // Also checked on the way out of the cache, not just on the way
+                // in, so a refusal already stored by an earlier version is
+                // healed without paying to transcribe the page again.
+                let markdown = VLMPrompt.looksLikeRefusal(cached.markdown) ? "" : cached.markdown
                 pages.append(PageOutput(
-                    pageIndex: index, markdown: cached.markdown,
+                    pageIndex: index, markdown: markdown,
                     confidence: cached.confidence,
                     needsReview: cached.needsReview,
                     source: cached.escalated ? .vlm : .vision))
@@ -331,6 +335,15 @@ public final class Pipeline: @unchecked Sendable {
                     image: rendered.image, pageNumber: pageIndex + 1, notebook: notebook,
                     diagramCount: transcript.diagrams.count,
                     visionDraft: MarkdownBuilder().markdown(for: transcript.lines))
+                guard !VLMPrompt.looksLikeRefusal(markdown) else {
+                    // The model described the page instead of transcribing it,
+                    // which means there was nothing on it. Record a blank page
+                    // rather than writing its explanation into the vault.
+                    log.info("page \(pageIndex + 1) came back blank from \(vlm.model)")
+                    result.pagesEscalated += 1
+                    return TranscribedPage(markdown: "", quality: 1.0, needsReview: false,
+                                           source: .vlm, diagrams: transcript.diagrams)
+                }
                 result.pagesEscalated += 1
                 log.info("page \(pageIndex + 1) escalated to \(vlm.model)")
                 transcript.vlmMarkdown = markdown

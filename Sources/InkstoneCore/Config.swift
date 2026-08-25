@@ -40,6 +40,12 @@ public struct InkstoneConfig: Codable, Sendable {
     /// sub-headings with it, so they are filed under the real topic.
     public var continuationHeadings: [String]
 
+    /// Headings that are not really headings — a phrase the recogniser promoted
+    /// because of how it was written. Matched case-insensitively against the
+    /// whole title. The text is kept as ordinary prose, never dropped; only its
+    /// promotion to a heading is undone.
+    public var ignoredHeadings: [String]
+
     /// Subfolder of the vault for cropped diagrams, relative to `vaultPath`.
     public var attachmentsSubfolder: String
 
@@ -164,6 +170,7 @@ public struct InkstoneConfig: Codable, Sendable {
         granularity: nil,
         sectionDepth: 3,
         continuationHeadings: [#"^\(?cont(inued|inuation|\.|'d|d)?\)?$"#, #"^\(?more\)?$"#],
+        ignoredHeadings: [],
         attachmentsSubfolder: "Inkstone/attachments",
         renderDPI: 300,
         recognitionLanguages: ["en-US"],
