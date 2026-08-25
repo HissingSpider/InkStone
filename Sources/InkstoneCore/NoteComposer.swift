@@ -72,8 +72,12 @@ public struct ComposedNote: Sendable {
     /// up there has to stay small and useful. Everything that is merely a record
     /// of how the note was made belongs out of the way at the bottom.
     public var footer: String?
-    /// Pages that scored below the escalation threshold and were not rescued.
-    public var lowConfidencePages: [Int]
+    /// True when part of this note came back unreliable from local recognition.
+    ///
+    /// A count of *which* pages used to live here, but page numbers are an
+    /// artefact of the source PDF and a note can span several of them, so the
+    /// only honest thing to report is whether any of it is suspect.
+    public var needsReview: Bool
     /// The note's own name, so cross-linking can avoid linking it to itself.
     public var title: String = ""
 
@@ -120,73 +124,206 @@ public struct NoteComposer: Sendable {
         notebook: String, sourceURL: URL, pages: [PageOutput], now: Date = Date()
     ) -> [ComposedNote] {
         let folder = route(notebook: notebook)
+        let escalated = pages.contains { $0.source == .vlm }
+        let needsReview = pages.contains { $0.needsReview && $0.source != .vlm }
+        var used: Set<String> = []
+
         switch granularity {
         case .notebook:
-            return [composeSingle(notebook: notebook, folder: folder, sourceURL: sourceURL,
-                                  pages: pages, now: now)]
+            let body = pages
+                .map { $0.markdown.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .enumerated()
+                .map { config.showPageNumbers ? "## Page \($0.offset + 1)\n\n\($0.element)" : $0.element }
+                .joined(separator: "\n\n---\n\n")
+            return [makeNote(
+                title: notebook, body: body, notebook: notebook, destination: folder,
+                sourceURL: sourceURL, now: now, escalated: escalated,
+                needsReview: needsReview, quality: Self.meanQuality(pages),
+                isCategory: false, used: &used)]
 
         case .page:
-            return pages.map { page in
-                composeSingle(
-                    notebook: "\(notebook) — p\(page.pageIndex + 1)",
-                    folder: folder.appending("/\(Self.safeFileName(notebook))"),
-                    sourceURL: sourceURL, pages: [page], now: now,
-                    includePageHeadings: false)
+            return pages.filter { !$0.isBlank }.map { page in
+                makeNote(
+                    title: "\(notebook) — p\(page.pageIndex + 1)",
+                    body: page.markdown.trimmingCharacters(in: .whitespacesAndNewlines),
+                    notebook: notebook,
+                    destination: folder.appending("/\(Self.safeFileName(notebook))"),
+                    sourceURL: sourceURL, now: now,
+                    escalated: page.source == .vlm,
+                    needsReview: page.needsReview && page.source != .vlm,
+                    quality: page.confidence, isCategory: false, used: &used)
             }
 
         case .section:
-            var used: Set<String> = []
-            return Self.sections(in: pages, fallbackTitle: notebook).map { rawSection in
-                var section = rawSection
-                if section.isExplicit, let corrected = alias(for: section.title) {
-                    section.title = corrected
-                }
-                // An explicit heading may have its own routing rule; that is the
-                // point of the mode, so it wins over the notebook's rule. Without
-                // one, notes nest under the notebook so two books cannot both
-                // claim "Vectors.md" and overwrite each other every run.
-                let destination = section.isExplicit
-                    ? routeIfMatched(section.title)
-                        ?? folder.appending("/\(Self.safeFileName(notebook))")
-                    : folder.appending("/\(Self.safeFileName(notebook))")
-
-                var note = composeSingle(
-                    notebook: section.title, folder: destination, sourceURL: sourceURL,
-                    pages: section.pages, now: now,
-                    includePageHeadings: section.pages.count > 1)
-
-                note.frontmatter["notebook"] = .string(notebook)
-                if section.isExplicit {
-                    note.frontmatter["category"] = .string(section.title)
-                    // Tagging as well as a field: a field is queryable, a tag is
-                    // clickable, and Obsidian users reach for both.
-                    note.frontmatter["tags"] = .list(config.defaultTags + [Self.slug(section.title)])
-                }
-                note.relativePath = Self.deduplicate(note.relativePath, against: &used)
-                return note
-            }
+            return composeSections(notebook: notebook, folder: folder,
+                                   sourceURL: sourceURL, pages: pages, now: now)
         }
     }
 
     // MARK: Sections
 
-    /// Splits `pages` into runs that each begin with a heading page.
-    ///
-    /// Pages before the first heading become a leading section named after the
-    /// notebook, so nothing is ever dropped for want of a title.
-    static func sections(in pages: [PageOutput], fallbackTitle: String) -> [Section] {
-        var sections: [Section] = []
+    /// Builds one note per heading, and turns any heading with sub-headings
+    /// into an index that links to them.
+    private func composeSections(
+        notebook: String, folder: String, sourceURL: URL, pages: [PageOutput], now: Date
+    ) -> [ComposedNote] {
+        let combined = pages
+            .map { $0.markdown.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n---\n\n")
 
-        for page in pages {
-            if let title = sectionTitle(of: page.markdown) {
-                sections.append(Section(title: title, pages: [page], isExplicit: true))
-            } else if sections.isEmpty {
-                sections.append(Section(title: fallbackTitle, pages: [page], isExplicit: false))
-            } else {
-                sections[sections.count - 1].pages.append(page)
-            }
+        let continuations = config.continuationHeadings.compactMap {
+            try? NSRegularExpression(pattern: $0, options: [.caseInsensitive])
         }
-        return sections
+        let tree = SectionParser.parse(combined)
+            .dissolvingContinuations(matching: continuations)
+        let nested = folder.isEmpty
+            ? Self.safeFileName(notebook)
+            : folder.appending("/\(Self.safeFileName(notebook))")
+        let escalated = pages.contains { $0.source == .vlm }
+        let needsReview = pages.contains { $0.needsReview && $0.source != .vlm }
+
+        var notes: [ComposedNote] = []
+        var used: Set<String> = []
+
+        // Anything written before the first heading belongs to the notebook.
+        if !tree.content.isEmpty {
+            notes.append(makeNote(
+                title: notebook, body: tree.content, notebook: notebook,
+                destination: nested, sourceURL: sourceURL, now: now, escalated: escalated,
+                needsReview: needsReview, quality: Self.meanQuality(pages),
+                isCategory: false, used: &used))
+        }
+
+        for child in tree.children {
+            emit(section: child, notebook: notebook, nested: nested, sourceURL: sourceURL,
+                 now: now, escalated: escalated, needsReview: needsReview,
+                 quality: Self.meanQuality(pages), into: &notes, used: &used)
+        }
+
+        // A notebook with no headings at all still has to produce something.
+        if notes.isEmpty {
+            notes.append(makeNote(
+                title: notebook, body: combined, notebook: notebook,
+                destination: nested, sourceURL: sourceURL, now: now, escalated: escalated,
+                needsReview: needsReview, quality: Self.meanQuality(pages),
+                isCategory: false, used: &used))
+        }
+        return notes
+    }
+
+    /// Emits `section` as a note, recursing while the heading level is still
+    /// shallow enough to be worth its own file.
+    private func emit(
+        section: MarkdownSection, notebook: String, nested: String, sourceURL: URL,
+        now: Date, escalated: Bool, needsReview: Bool, quality: Double,
+        into notes: inout [ComposedNote], used: inout Set<String>
+    ) {
+        let rawTitle = section.title ?? notebook
+        let title = alias(for: rawTitle) ?? rawTitle
+
+        let splittableChildren = section.children.filter {
+            $0.level <= config.sectionDepth && $0.title != nil
+        }
+        let inlineChildren = section.children.filter {
+            !($0.level <= config.sectionDepth && $0.title != nil)
+        }
+
+        // Below the split depth, or with nothing worth splitting out, the whole
+        // subtree stays in one note.
+        guard section.level <= config.sectionDepth, !splittableChildren.isEmpty else {
+            let body = Self.tidy(MarkdownSection(
+                level: 0, title: nil, content: section.content,
+                children: section.children).flattened())
+            notes.append(makeNote(
+                title: title, body: body, notebook: notebook,
+                destination: routeIfMatched(title) ?? nested,
+                sourceURL: sourceURL, now: now, escalated: escalated,
+                needsReview: needsReview, quality: quality,
+                isCategory: section.title != nil, used: &used))
+            return
+        }
+
+        // A heading with sub-headings becomes an index. Its own prose stays —
+        // that is the explanation of what the children have in common — and a
+        // list of links follows.
+        var childTitles: [String] = []
+        for child in splittableChildren {
+            let before = notes.count
+            emit(section: child, notebook: notebook, nested: nested, sourceURL: sourceURL,
+                 now: now, escalated: escalated, needsReview: needsReview,
+                 quality: quality, into: &notes, used: &used)
+            if notes.count > before { childTitles.append(notes[before].title) }
+        }
+
+        var parts: [String] = []
+        let intro = MarkdownSection(level: 0, title: nil, content: section.content,
+                                    children: inlineChildren).flattened()
+        let tidied = Self.tidy(intro)
+        if !tidied.isEmpty { parts.append(tidied) }
+        if !childTitles.isEmpty {
+            parts.append("## Contents\n"
+                         + childTitles.map { "- [[\($0)]]" }.joined(separator: "\n"))
+        }
+
+        notes.append(makeNote(
+            title: title, body: parts.joined(separator: "\n\n"), notebook: notebook,
+            destination: routeIfMatched(title) ?? nested,
+            sourceURL: sourceURL, now: now, escalated: escalated,
+            needsReview: needsReview, quality: quality, isCategory: true, used: &used))
+    }
+
+    /// One note, routed and tagged.
+    private func makeNote(
+        title: String, body: String, notebook: String, destination: String, sourceURL: URL,
+        now: Date, escalated: Bool, needsReview: Bool, quality: Double,
+        isCategory: Bool, used: inout Set<String>
+    ) -> ComposedNote {
+
+        var frontmatter: [String: FrontmatterValue] = [
+            "notebook": .string(notebook),
+            "tags": .list(config.defaultTags + (isCategory ? [Self.slug(title)] : [])),
+        ]
+        if isCategory { frontmatter["category"] = .string(title) }
+        if needsReview { frontmatter["needs_review"] = .bool(true) }
+        frontmatter["updated"] = .date(now)
+
+        var provenance = ["`\(sourceURL.lastPathComponent)`",
+                          escalated ? config.resolvedModel : "vision",
+                          Frontmatter.dayString(now)]
+        if !escalated { provenance.append(String(format: "quality %.2f", quality)) }
+        var footer = "> [!abstract]- Transcription\n> " + provenance.joined(separator: " · ")
+        if needsReview {
+            footer += "\n> Some of this was hard to read and may be wrong."
+        }
+
+        let name = Self.safeFileName(title)
+        let path = destination.isEmpty ? "\(name).md" : "\(destination)/\(name).md"
+        return ComposedNote(
+            relativePath: Self.deduplicate(path, against: &used),
+            body: body,
+            frontmatter: frontmatter,
+            footer: footer,
+            needsReview: needsReview,
+            title: title)
+    }
+
+    /// Strips page-separator rules stranded at either end of a section.
+    static func tidy(_ markdown: String) -> String {
+        var lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        while let first = lines.first, first.trimmingCharacters(in: .whitespaces) == "---"
+            || first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces) == "---"
+            || last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Mean gate score across the pages that had content on them.
+    static func meanQuality(_ pages: [PageOutput]) -> Double {
+        let scores = pages.filter { !$0.isBlank }.map(\.confidence)
+        return scores.isEmpty ? 1.0 : scores.reduce(0, +) / Double(scores.count)
     }
 
     /// The configured correction for an OCR'd section name, if there is one.
@@ -199,32 +336,6 @@ public struct NoteComposer: Sendable {
             return right
         }
         return nil
-    }
-
-    /// The heading a page opens with, if it opens with one.
-    ///
-    /// Reads the finished markdown rather than the raw OCR lines, which means it
-    /// works identically for locally recognised pages and for cloud-transcribed
-    /// ones, and costs nothing for a cached page because the markdown is already
-    /// stored.
-    static func sectionTitle(of markdown: String) -> String? {
-        guard let first = markdown
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-        else { return nil }
-
-        let line = first.trimmingCharacters(in: .whitespaces)
-        guard line.hasPrefix("#") else { return nil }
-
-        let title = line.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
-
-        // A title is short and has words in it. These filters keep a long
-        // sentence that merely happens to be written large, or a smear of OCR
-        // punctuation, from becoming a note name.
-        guard title.count >= 3, title.count <= 60 else { return nil }
-        guard title.split(separator: " ").count <= 6 else { return nil }
-        guard title.contains(where: \.isLetter) else { return nil }
-        return title
     }
 
     /// Ensures each note in a run gets its own path, since a notebook can
@@ -243,69 +354,6 @@ public struct NoteComposer: Sendable {
             }
         }
         return path
-    }
-
-    private func composeSingle(
-        notebook: String, folder: String, sourceURL: URL,
-        pages: [PageOutput], now: Date, includePageHeadings: Bool = true
-    ) -> ComposedNote {
-        var sections: [String] = []
-        var lowConfidence: [Int] = []
-        var escalatedCount = 0
-
-        for page in pages {
-            if page.source == .vlm { escalatedCount += 1 }
-            if page.needsReview && page.source != .vlm {
-                lowConfidence.append(page.pageIndex + 1)
-            }
-
-            let body = page.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { continue }
-
-            // Page numbers are an artefact of the source PDF, not of the notes.
-            // Reordering or re-exporting a notebook renumbers everything, so a
-            // heading built from them is worse than no heading: it looks like
-            // structure and is really just noise.
-            sections.append(includePageHeadings && config.showPageNumbers
-                ? "## Page \(page.pageIndex + 1)\n\n\(body)"
-                : body)
-        }
-
-        let confidences = pages.filter { !$0.isBlank }.map(\.confidence)
-        let meanConfidence = confidences.isEmpty
-            ? 1.0 : confidences.reduce(0, +) / Double(confidences.count)
-        let method = escalatedCount == 0 ? "vision"
-            : (escalatedCount == pages.count ? config.resolvedModel : "mixed")
-
-        // The small, queryable block at the top.
-        var frontmatter: [String: FrontmatterValue] = [
-            "notebook": .string(notebook),
-            "tags": .list(config.defaultTags),
-        ]
-        if !lowConfidence.isEmpty {
-            frontmatter["needs_review"] = .bool(true)
-        }
-        frontmatter["updated"] = .date(now)
-
-        // The record of how it was made, tucked underneath.
-        var provenance = ["`\(sourceURL.lastPathComponent)`", method,
-                          Frontmatter.dayString(now)]
-        if method == "vision" {
-            provenance.append(String(format: "quality %.2f", meanConfidence))
-        }
-        var footer = "> [!abstract]- Transcription\n> " + provenance.joined(separator: " · ")
-        if !lowConfidence.isEmpty {
-            footer += "\n> Some of this page was hard to read and may be wrong."
-        }
-
-        let name = Self.safeFileName(notebook)
-        return ComposedNote(
-            relativePath: folder.isEmpty ? "\(name).md" : "\(folder)/\(name).md",
-            body: sections.joined(separator: "\n\n---\n\n"),
-            frontmatter: frontmatter,
-            footer: footer,
-            lowConfidencePages: lowConfidence,
-            title: notebook)
     }
 
     // MARK: Page body

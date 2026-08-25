@@ -25,6 +25,21 @@ public struct InkstoneConfig: Codable, Sendable {
     /// with, and produced a second, duplicate set of notes.
     public var granularity: String?
 
+    /// Deepest heading level that gets its own note in `section` granularity.
+    ///
+    /// 3 means `#`, `##` and `###` each become a note, so a page headed "Vector
+    /// operations" containing "Adding vectors" and "Scaling vectors" yields
+    /// three notes: one per idea, plus an index linking them. Lower it to 2 for
+    /// coarser notes, raise it to 4 to split further still.
+    public var sectionDepth: Int
+
+    /// Headings that mean "more of the last thing" rather than naming a topic.
+    ///
+    /// Matched case-insensitively against the whole title. A section matching
+    /// one of these is merged into the section before it, taking its
+    /// sub-headings with it, so they are filed under the real topic.
+    public var continuationHeadings: [String]
+
     /// Subfolder of the vault for cropped diagrams, relative to `vaultPath`.
     public var attachmentsSubfolder: String
 
@@ -147,6 +162,8 @@ public struct InkstoneConfig: Codable, Sendable {
         vaultPath: "~/Obsidian/Vault",
         notesSubfolder: "Inkstone",
         granularity: nil,
+        sectionDepth: 3,
+        continuationHeadings: [#"^\(?cont(inued|inuation|\.|'d|d)?\)?$"#, #"^\(?more\)?$"#],
         attachmentsSubfolder: "Inkstone/attachments",
         renderDPI: 300,
         recognitionLanguages: ["en-US"],

@@ -326,7 +326,7 @@ struct NoteComposerTests {
         #expect(notes.count == 1)
         // Page 2 scored 0.88 — high — yet the gate condemned it. Re-deriving the
         // flag from the number was the bug that shipped bad pages unflagged.
-        #expect(notes[0].lowConfidencePages == [2])
+        #expect(notes[0].needsReview)
         #expect(notes[0].frontmatter["needs_review"] == .bool(true))
         #expect(notes[0].contents.contains("fine"))
         #expect(notes[0].contents.contains("murky"))
@@ -338,7 +338,7 @@ struct NoteComposerTests {
             notebook: "Recipes", sourceURL: URL(fileURLWithPath: "/tmp/Recipes.pdf"),
             pages: [PageOutput(pageIndex: 0, markdown: "ok", confidence: 0.10,
                                needsReview: false, source: .vision)])
-        #expect(notes[0].lowConfidencePages.isEmpty)
+        #expect(!notes[0].needsReview)
         #expect(notes[0].frontmatter["needs_review"] == nil)
     }
 
@@ -348,7 +348,7 @@ struct NoteComposerTests {
             notebook: "Recipes", sourceURL: URL(fileURLWithPath: "/tmp/Recipes.pdf"),
             pages: [PageOutput(pageIndex: 0, markdown: "rescued", confidence: 1.0,
                                needsReview: true, source: .vlm)])
-        #expect(notes[0].lowConfidencePages.isEmpty)
+        #expect(!notes[0].needsReview)
         #expect(notes[0].frontmatter["needs_review"] == nil)
     }
 
@@ -796,8 +796,8 @@ struct DiagramFilterTests {
     }
 }
 
-@Suite("Section splitting")
-struct SectionTests {
+@Suite("Section routing and naming")
+struct SectionRoutingTests {
 
     private var config: InkstoneConfig {
         var config = InkstoneConfig.default
@@ -806,134 +806,68 @@ struct SectionTests {
         return config
     }
 
-    private func page(_ index: Int, _ markdown: String) -> PageOutput {
-        PageOutput(pageIndex: index, markdown: markdown, confidence: 0.9, source: .vision)
+    private func compose(_ markdown: String, config: InkstoneConfig? = nil,
+                         notebook: String = "Current") -> [ComposedNote] {
+        NoteComposer(config: config ?? self.config, granularity: .section).compose(
+            notebook: notebook, sourceURL: URL(fileURLWithPath: "/tmp/\(notebook).pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: markdown, confidence: 1, source: .vlm)])
     }
 
-    // MARK: Title detection
+    @Test("A routed section goes where the rule says; an unrouted one nests")
+    func routingAppliesToSectionTitles() {
+        let notes = compose("""
+            ## Vectors
 
-    @Test func detectsHeadingsAtAnyLevel() {
-        #expect(NoteComposer.sectionTitle(of: "## Vectors\n\nbody") == "Vectors")
-        #expect(NoteComposer.sectionTitle(of: "# Sprint Planning\n\nbody") == "Sprint Planning")
-        #expect(NoteComposer.sectionTitle(of: "### Parallel Vectors\n\nbody") == "Parallel Vectors")
+            length and direction
+
+            ## Sprint Planning
+
+            standup notes
+            """)
+
+        let vectors = try! #require(notes.first { $0.title == "Vectors" })
+        #expect(vectors.relativePath == "Courses/Linear Algebra/Vectors.md")
+        #expect(vectors.frontmatter["notebook"] == .string("Current"))
+
+        // Unrouted sections nest under the notebook, so two notebooks cannot
+        // both claim the same file name and overwrite each other every run.
+        let sprint = try! #require(notes.first { $0.title == "Sprint Planning" })
+        #expect(sprint.relativePath == "Inkstone/Current/Sprint Planning.md")
+        #expect(sprint.frontmatter["tags"]
+                == .list(["inkstone", "handwritten", "sprint-planning"]))
     }
 
-    @Test func ignoresLeadingBlankLines() {
-        #expect(NoteComposer.sectionTitle(of: "\n\n## Vectors\nbody") == "Vectors")
+    @Test("An empty destination means the vault root")
+    func emptyDestinationIsTheRoot() {
+        var rooted = config
+        rooted.notebookRouting = ["Vectors": ""]
+        let notes = compose("## Vectors\n\nbody", config: rooted)
+        #expect(notes[0].relativePath == "Vectors.md")
     }
 
-    @Test("A page that does not open with a heading starts no section")
-    func rejectsNonHeadingPages() {
-        #expect(NoteComposer.sectionTitle(of: "just prose\n\n## a heading later") == nil)
-        #expect(NoteComposer.sectionTitle(of: "") == nil)
-    }
-
-    @Test("A long sentence written large is not a section title")
-    func rejectsImplausibleTitles() {
-        #expect(NoteComposer.sectionTitle(
-            of: "## the quick brown fox jumps over the lazy dog again") == nil)  // too many words
-        #expect(NoteComposer.sectionTitle(of: "## ##") == nil)                   // no letters
-        #expect(NoteComposer.sectionTitle(of: "## ab") == nil)                   // too short
-    }
-
-    // MARK: Grouping
-
-    @Test("Pages accumulate under the heading that opened them")
-    func groupsContinuationPages() {
-        let sections = NoteComposer.sections(in: [
-            page(0, "## Vectors\n\nintro"),
-            page(1, "more about vectors"),
-            page(2, "## Matrices\n\nintro"),
-            page(3, "more about matrices"),
-        ], fallbackTitle: "Notebook")
-
-        #expect(sections.map(\.title) == ["Vectors", "Matrices"])
-        #expect(sections[0].pages.count == 2)
-        #expect(sections[1].pages.count == 2)
-        #expect(sections.filter(\.isExplicit).count == 2)
-    }
-
-    @Test("Pages before the first heading are kept under the notebook's name")
-    func leadingPagesAreNotLost() {
-        let sections = NoteComposer.sections(in: [
-            page(0, "a cover page"),
-            page(1, "## Vectors\n\nintro"),
-        ], fallbackTitle: "Calculus")
-
-        #expect(sections.map(\.title) == ["Calculus", "Vectors"])
-        #expect(!sections[0].isExplicit)
-        #expect(sections[1].isExplicit)
-    }
-
-    @Test("A notebook with no headings at all stays one note")
-    func headinglessNotebookIsOneSection() {
-        let sections = NoteComposer.sections(in: [page(0, "prose"), page(1, "more prose")],
-                                             fallbackTitle: "Scratch")
-        #expect(sections.count == 1)
-        #expect(sections[0].title == "Scratch")
-        #expect(sections[0].pages.count == 2)
-    }
-
-    // MARK: Composition
-
-    @Test("Each section becomes its own categorised, tagged note")
-    func sectionsBecomeCategorisedNotes() {
-        let notes = NoteComposer(config: config, granularity: .section).compose(
-            notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
-            pages: [page(0, "## Vectors\n\nintro"),
-                    page(1, "continued"),
-                    page(2, "## Sprint Planning\n\nstandup notes")])
-
-        #expect(notes.count == 2)
-
-        // A routed section goes where the rule says.
-        #expect(notes[0].relativePath == "Courses/Linear Algebra/Vectors.md")
-        #expect(notes[0].frontmatter["category"] == .string("Vectors"))
-        #expect(notes[0].frontmatter["notebook"] == .string("Current"))
-        #expect(notes[0].frontmatter["tags"] == .list(["inkstone", "handwritten", "vectors"]))
-
-        // An unrouted one nests under its notebook rather than the vault root,
-        // so two notebooks cannot fight over the same file name.
-        #expect(notes[1].relativePath == "Inkstone/Current/Sprint Planning.md")
-        #expect(notes[1].frontmatter["category"] == .string("Sprint Planning"))
-    }
-
-    @Test("Untitled leading pages are not given a bogus category")
-    func fallbackSectionIsNotCategorised() {
-        let notes = NoteComposer(config: config, granularity: .section).compose(
-            notebook: "Scratch", sourceURL: URL(fileURLWithPath: "/tmp/Scratch.pdf"),
-            pages: [page(0, "loose notes")])
-
-        #expect(notes[0].frontmatter["category"] == nil)
-        #expect(notes[0].frontmatter["tags"] == .list(["inkstone", "handwritten"]))
-        #expect(notes[0].relativePath == "Inkstone/Scratch/Scratch.md")
-    }
-
-    @Test("A heading used twice in one notebook does not overwrite itself")
+    @Test("A heading used twice does not overwrite itself")
     func duplicateHeadingsGetDistinctPaths() {
-        let notes = NoteComposer(config: config, granularity: .section).compose(
-            notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
-            pages: [page(0, "## Standup\n\nmonday"), page(1, "## Standup\n\ntuesday")])
-
+        let notes = compose("## Standup\n\nmonday\n\n## Standup\n\ntuesday")
         #expect(notes.count == 2)
         #expect(notes[0].relativePath != notes[1].relativePath)
         #expect(notes[1].relativePath.hasSuffix("Standup (2).md"))
     }
 
-    @Test("A single-page section carries no page heading clutter")
-    func singlePageSectionsAreClean() {
-        let notes = NoteComposer(config: config, granularity: .section).compose(
-            notebook: "Current", sourceURL: URL(fileURLWithPath: "/tmp/Current.pdf"),
-            pages: [page(4, "## Vectors\n\nthe body")])
-        #expect(!notes[0].contents.contains("## Page"))
-    }
-
     @Test("An empty routing rule cannot swallow every section")
     func emptyPatternIsIgnored() {
-        var config = config
-        config.notebookRouting = ["": "Everything"]
-        let composer = NoteComposer(config: config, granularity: .section)
-        #expect(composer.routeIfMatched("Vectors") == nil)
+        var greedy = config
+        greedy.notebookRouting = ["": "Everything"]
+        #expect(NoteComposer(config: greedy, granularity: .section)
+                .routeIfMatched("Vectors") == nil)
+    }
+
+    @Test func fileNamesAreVaultSafe() {
+        #expect(NoteComposer.safeFileName("A/B:C*D?") == "A-B-C-D-")
+        #expect(NoteComposer.safeFileName("   ") == "Untitled")
+        #expect(NoteComposer.safeFileName("Vector operations.") == "Vector operations")
+        #expect(NoteComposer.safeFileName(".hidden") == "hidden")
+        #expect(NoteComposer.safeFileName("...") == "Untitled")
+        #expect(NoteComposer.slug("Physics 201 — Term 2") == "physics-201-term-2")
     }
 }
 
@@ -1317,5 +1251,231 @@ struct NoteShapeTests {
         #expect(notes[0].frontmatter["needs_review"] == .bool(true))
         #expect(notes[0].contents.contains("hard to read"))
         #expect(notes[0].contents.contains("quality 0.40"))
+    }
+}
+
+@Suite("Heading tree")
+struct SectionParserTests {
+
+    @Test func parsesNestedHeadings() {
+        let tree = SectionParser.parse("""
+            intro text
+
+            ## Vector operations
+
+            what these have in common
+
+            ### Adding 2 vectors
+
+            add coordinatewise
+
+            ### Scaling vectors
+
+            multiply each entry
+
+            ## Parallel vectors
+
+            scalar multiples
+            """)
+
+        #expect(tree.content == "intro text")
+        #expect(tree.children.map(\.title) == ["Vector operations", "Parallel vectors"])
+
+        let operations = tree.children[0]
+        #expect(operations.content == "what these have in common")
+        #expect(operations.children.map(\.title) == ["Adding 2 vectors", "Scaling vectors"])
+        #expect(operations.children[0].content == "add coordinatewise")
+    }
+
+    @Test("A hash inside a code fence is not a heading")
+    func ignoresFencedCode() {
+        let tree = SectionParser.parse("## Real\n\n```\n# not a heading\n```\n")
+        #expect(tree.children.count == 1)
+        #expect(tree.children[0].content.contains("# not a heading"))
+    }
+
+    @Test func requiresSpaceAfterHashes() {
+        #expect(SectionParser.heading(in: "#hashtag") == nil)
+        #expect(SectionParser.heading(in: "####### too deep") == nil)
+        #expect(SectionParser.heading(in: "## ") == nil)
+        #expect(SectionParser.heading(in: "## Vectors")?.title == "Vectors")
+    }
+
+    @Test func flattensBackToMarkdown() {
+        let markdown = "## A\n\nbody a\n\n### B\n\nbody b"
+        #expect(SectionParser.parse(markdown).children[0].flattened() == markdown)
+    }
+
+    @Test func handlesNoHeadingsAtAll() {
+        let tree = SectionParser.parse("just prose\n\nand more")
+        #expect(tree.children.isEmpty)
+        #expect(tree.content == "just prose\n\nand more")
+    }
+}
+
+@Suite("Splitting into findable notes")
+struct HierarchicalSectionTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        return config
+    }
+
+    private func compose(_ markdown: String, config: InkstoneConfig? = nil) -> [ComposedNote] {
+        NoteComposer(config: config ?? self.config, granularity: .section).compose(
+            notebook: "Calculus", sourceURL: URL(fileURLWithPath: "/tmp/Calculus.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: markdown, confidence: 1, source: .vlm)])
+    }
+
+    @Test("A topic with sub-topics becomes an index plus a note per sub-topic")
+    func subTopicsBecomeTheirOwnNotes() {
+        let notes = compose("""
+            ## Vector operations
+
+            things you can do to a vector
+
+            ### Adding 2 vectors
+
+            add coordinatewise
+
+            ### Scaling vectors
+
+            multiply each entry by c
+            """)
+
+        #expect(Set(notes.map(\.title))
+                == ["Vector operations", "Adding 2 vectors", "Scaling vectors"])
+
+        let index = try! #require(notes.first { $0.title == "Vector operations" })
+        // The parent keeps its own prose — that is the explanation of what the
+        // children have in common — and gains links to them.
+        #expect(index.body.contains("things you can do to a vector"))
+        #expect(index.body.contains("- [[Adding 2 vectors]]"))
+        #expect(index.body.contains("- [[Scaling vectors]]"))
+        // And it does not still contain the children's content.
+        #expect(!index.body.contains("coordinatewise"))
+
+        let child = try! #require(notes.first { $0.title == "Adding 2 vectors" })
+        #expect(child.body.contains("add coordinatewise"))
+        #expect(child.frontmatter["category"] == .string("Adding 2 vectors"))
+    }
+
+    @Test("Depth controls how finely a notebook is cut up")
+    func depthIsConfigurable() {
+        var shallow = config
+        shallow.sectionDepth = 2
+        let notes = compose("""
+            ## Vector operations
+
+            ### Adding 2 vectors
+
+            add coordinatewise
+            """, config: shallow)
+
+        // At depth 2 the sub-topic stays inside its parent.
+        #expect(notes.map(\.title) == ["Vector operations"])
+        #expect(notes[0].body.contains("### Adding 2 vectors"))
+        #expect(notes[0].body.contains("add coordinatewise"))
+    }
+
+    @Test("A topic with no sub-topics is left as one note, not made into an index")
+    func leafTopicsAreNotIndexes() {
+        let notes = compose("## Parallel vectors\n\nscalar multiples of each other")
+        #expect(notes.map(\.title) == ["Parallel vectors"])
+        #expect(!notes[0].body.contains("## Contents"))
+        #expect(notes[0].body.contains("scalar multiples"))
+    }
+
+    @Test("Text before the first heading is kept under the notebook's name")
+    func preambleIsNotLost() {
+        let notes = compose("a cover page\n\n## Vectors\n\nlength and direction")
+        #expect(notes.map(\.title).contains("Calculus"))
+        #expect(try! #require(notes.first { $0.title == "Calculus" }).body
+                .contains("a cover page"))
+    }
+
+    @Test("Aliases apply at any depth")
+    func aliasesApplyToSubTopics() {
+        var aliased = config
+        aliased.sectionAliases = ["Vector upending": "Vector Notations"]
+        let notes = compose("## Vector upending\n\ni, j, k", config: aliased)
+        #expect(notes.map(\.title) == ["Vector Notations"])
+    }
+}
+
+@Suite("Continuation headings")
+struct ContinuationTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        return config
+    }
+
+    private func compose(_ markdown: String) -> [ComposedNote] {
+        NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Calculus", sourceURL: URL(fileURLWithPath: "/tmp/Calculus.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: markdown, confidence: 1, source: .vlm)])
+    }
+
+    @Test("A 'Continued' heading is dissolved, and hands its children to the real topic")
+    func continuationsAreDissolved() {
+        // Taken from a real page: the topic ran over, the next page was headed
+        // "Continued", and the sub-topic that followed ended up filed under the
+        // marker instead of under the topic it belongs to.
+        let notes = compose("""
+            ## Vector operations
+
+            things you can do
+
+            ### Adding 2 vectors
+
+            add coordinatewise
+
+            ## Continued
+
+            leftover prose
+
+            ### Scaling vectors
+
+            multiply each entry
+            """)
+
+        #expect(!notes.contains { $0.title == "Continued" }, "no note should be named Continued")
+
+        let index = try! #require(notes.first { $0.title == "Vector operations" })
+        #expect(index.body.contains("- [[Adding 2 vectors]]"))
+        #expect(index.body.contains("- [[Scaling vectors]]"), "the child was re-parented")
+        // The marker's own prose is kept, not thrown away.
+        #expect(index.body.contains("leftover prose"))
+        #expect(notes.contains { $0.title == "Scaling vectors" })
+    }
+
+    @Test("Common spellings of the marker are all caught")
+    func matchesTheUsualSpellings() {
+        for marker in ["Continued", "continued", "cont.", "cont'd", "(continued)", "more"] {
+            let notes = compose("## Real topic\n\nbody\n\n## \(marker)\n\nextra")
+            #expect(!notes.contains { $0.title == marker }, "\(marker) should have dissolved")
+        }
+    }
+
+    @Test("A continuation with nothing before it merges upward rather than vanishing")
+    func leadingContinuationIsNotLost() {
+        let notes = compose("## Continued\n\nsome orphaned prose")
+        #expect(!notes.contains { $0.title == "Continued" })
+        #expect(notes.contains { $0.body.contains("some orphaned prose") })
+    }
+
+    @Test("A real topic that merely starts with 'cont' is left alone")
+    func doesNotOverMatch() {
+        let notes = compose("## Contour integrals\n\nbody")
+        #expect(notes.map(\.title) == ["Contour integrals"])
+    }
+
+    @Test("Page-separator rules do not survive at the edges of a note")
+    func strayRulesAreTrimmed() {
+        #expect(NoteComposer.tidy("---\n\nreal content\n\n---") == "real content")
+        #expect(NoteComposer.tidy("a\n\n---\n\nb") == "a\n\n---\n\nb", "internal rules stay")
     }
 }

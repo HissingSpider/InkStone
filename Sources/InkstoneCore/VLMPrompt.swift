@@ -35,6 +35,14 @@ public enum VLMPrompt {
             for text written as a heading (larger, underlined, boxed), `-` for bulleted \
             items, `1.` for numbered items, `- [ ]` for checkboxes, two-space indents \
             for nested items, `> ` for text the writer set apart in a margin or box.
+            - Mark every distinct topic on the page with a heading, at the level its \
+            size and position imply: a main topic as `##`, a sub-topic under it as `###`. \
+            Writers often start a new idea with a short phrase that is only slightly \
+            larger, or underlined, or set on its own line — treat that as a heading. Do \
+            not invent a heading where the page has none, but do not flatten one either: \
+            these headings are what split the page into separate, findable notes.
+            - A word like "continued" at the top of a page is not a heading. It marks \
+            more of the previous topic; transcribe it as ordinary text.
             - Keep mathematics as LaTeX between `$` for inline and `$$` for display.
             - Keep the writer's own abbreviations, symbols and shorthand. Do not expand them.
             - Fix only mechanical slips that are unambiguous: a letter clearly malformed \

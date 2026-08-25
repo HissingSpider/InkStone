@@ -302,9 +302,19 @@ mode from the one you tested with — and produce a second, duplicate set of
 notes alongside the first. The `--granularity` flag still overrides it for
 one-off experiments.
 
-A new section starts at any page whose first line is a heading. Everything
-until the next heading belongs to it, and pages before the first heading stay
-together under the notebook's own name so nothing is orphaned.
+A note is made for every heading, down to `sectionDepth` (default 3, so `#`, `##`
+and `###` each get one). A heading that has sub-headings keeps its own prose and
+gains a `## Contents` list linking to them, so a page headed "Vector operations"
+covering adding *and* scaling becomes three notes: one per idea, plus an index.
+
+Smaller notes are the point. A note you can name is a note you can find again,
+and one that covers two ideas is findable by neither. Set `sectionDepth` to 2 for
+coarser notes, or 4 to cut finer still.
+
+Text before the first heading stays under the notebook's own name, so nothing is
+orphaned. A heading that just says "Continued" is dissolved into the section
+before it — taking its sub-headings with it, so they are filed under the real
+topic rather than under the marker.
 
 Each section becomes its own note, categorised:
 
@@ -350,6 +360,8 @@ to defaults, so a config written by an older version keeps working.
 | `inboxPath` | detected | Folder the backups sync into; searched recursively |
 | `vaultPath` | detected | Obsidian vault root |
 | `notesSubfolder` | `Inkstone` | Where notes land inside the vault |
+| `sectionDepth` | `3` | Deepest heading level that gets its own note |
+| `continuationHeadings` | `["continued", "more", …]` | Headings meaning "more of the last thing" |
 | `granularity` | `notebook` | `notebook`, `page`, or `section` — the agents read this, so set it here rather than only passing `--granularity` |
 | `attachmentsSubfolder` | `Inkstone/attachments` | Where cropped diagrams land |
 | `renderDPI` | `300` | Vision's accuracy plateaus above this |
