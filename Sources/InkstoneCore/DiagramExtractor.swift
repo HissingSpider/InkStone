@@ -63,6 +63,21 @@ public struct DiagramExtractor: Sendable {
     /// run costs them the whole thing.
     public var maxComponents = 4_000
 
+    /// Smallest share of the page a single unbroken stroke must span for a
+    /// region to count as a drawing.
+    ///
+    /// This is what separates a diagram from handwriting the recogniser simply
+    /// failed to read. Unread writing survives text subtraction and looks like
+    /// ink with no text on top of it, so it used to be cropped and embedded —
+    /// and then the cloud model read it correctly anyway, leaving the same
+    /// content in the note twice, once as prose and once as a picture.
+    ///
+    /// Drawn marks are long: an axis, an arrow, a circled term. Written marks
+    /// are short, a few percent of the page at most, however large the cluster
+    /// of them is. Measuring the longest single component rather than the
+    /// merged region is the whole trick.
+    public var minStrokeSpan = 0.12
+
     /// Minimum share of a candidate's box that must actually be inked. Rejects
     /// a large empty box formed by two far-apart specks.
     public var minInkDensity: Double = 0.015
@@ -72,15 +87,21 @@ public struct DiagramExtractor: Sendable {
 
     /// Widest width:height (or height:width) ratio a crop may have.
     ///
-    /// A real drawing has some extent in both directions. A margin rule, a page
-    /// border or a torn edge is a sliver — one observed crop was 126x2452 — and
-    /// embedding it in a note is pure noise.
-    public var maxAspectRatio: Double = 8
+    /// A drawing occupies two dimensions; writing runs along one. Diagrams on
+    /// real pages measured between 1:1 and 1.5:1, while a line of handwriting
+    /// with a stroke running through it measured over 3:1 — as did page rules
+    /// and torn edges, one of which produced a 126x2452 sliver.
+    ///
+    /// The cost of this rule is that a genuinely wide diagram — a number line, a
+    /// long timeline — is rejected. Raise it if you draw those.
+    public var maxAspectRatio: Double = 3
 
     public init() {}
 
     public init(config: InkstoneConfig) {
         self.minAreaFraction = config.minDiagramAreaFraction
+        self.minStrokeSpan = config.minDiagramStrokeSpan
+        self.maxAspectRatio = config.maxDiagramAspectRatio
         self.cropPadding = config.diagramCropPadding
     }
 
@@ -201,6 +222,12 @@ public struct DiagramExtractor: Sendable {
             let area = Double(box.rect.width * box.rect.height)
             guard area / pageArea >= minAreaFraction else { return false }
             guard Double(box.cellCount) / area >= minInkDensity else { return false }
+            // Nothing here is drawn — it is writing the recogniser could not
+            // read. Cropping it would duplicate text that appears in the note.
+            let span = Double(box.longestComponent * cellSize)
+                / Double(Swift.max(width, height))
+            guard span >= minStrokeSpan else { return false }
+
             // Reject page rules and long underlines: wide, but only a cell or
             // two tall, so nothing is really drawn there.
             let isHairline = box.rect.height <= 2 && box.rect.width > columns / 5
@@ -253,6 +280,10 @@ public struct DiagramExtractor: Sendable {
     struct CellBox: Sendable {
         var rect: CellRect
         var cellCount: Int
+        /// Largest single connected component in this group, in cells. Merging
+        /// keeps the maximum rather than the union, so a cluster of small marks
+        /// never adds up to look like one long stroke.
+        var longestComponent: Int
     }
 
     /// Integer rectangle in cell space.
@@ -309,7 +340,8 @@ public struct DiagramExtractor: Sendable {
                     }
                 }
             }
-            boxes.append(CellBox(rect: rect, cellCount: count))
+            boxes.append(CellBox(rect: rect, cellCount: count,
+                                 longestComponent: max(rect.width, rect.height)))
         }
         return boxes
     }
@@ -328,6 +360,8 @@ public struct DiagramExtractor: Sendable {
                 }) {
                     result[index].rect.formUnion(box.rect)
                     result[index].cellCount += box.cellCount
+                    result[index].longestComponent = Swift.max(
+                        result[index].longestComponent, box.longestComponent)
                     merged = true
                 } else {
                     result.append(box)

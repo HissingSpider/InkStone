@@ -658,3 +658,55 @@ struct MergedNoteTests {
             atPath: config.notesURL.appendingPathComponent("Calculus/Vectors.md").path))
     }
 }
+
+@Suite("Diagram or handwriting", .serialized)
+struct DiagramDiscriminationTests {
+
+    private func scan(_ spec: Fixtures.PageSpec, configure: (inout DiagramExtractor) -> Void = { _ in })
+        throws -> [CGRect] {
+        try Fixtures.withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("p.pdf")
+            try Fixtures.makePDF(at: url, title: "P", pages: [spec])
+            let page = try PDFPageRenderer(url: url).render(pageIndex: 0, dpi: 300)
+            let blocks = try VisionOCR().recognize(page.image)
+
+            var extractor = DiagramExtractor()
+            configure(&extractor)
+            return try extractor.locate(in: page, textBlocks: blocks).rects
+        }
+    }
+
+    @Test("A cluster of short marks is writing, not a diagram, even unread")
+    func shortMarksAreNotDiagrams() throws {
+        // This is the shape unrecognised handwriting leaves behind: ink with no
+        // text box over it, which used to be cropped and embedded — and then
+        // transcribed by the cloud model as well, putting the same content in
+        // the note twice.
+        #expect(try scan(.init(lines: ["Notes"], includeShortMarks: true)).isEmpty)
+    }
+
+    @Test("Long drawn strokes are a diagram")
+    func longStrokesAreDiagrams() throws {
+        #expect(try scan(.init(lines: ["Circuit"], includeDiagram: true)).count >= 1)
+    }
+
+    @Test("Lowering the stroke threshold lets the short marks back in")
+    func thresholdIsWhatDecides() throws {
+        let kept = try scan(.init(lines: ["Notes"], includeShortMarks: true)) { extractor in
+            extractor.minStrokeSpan = 0
+            extractor.maxAspectRatio = 100
+            extractor.minAreaFraction = 0
+            extractor.minInkDensity = 0
+        }
+        #expect(!kept.isEmpty, "with the filter off, the marks are picked up again")
+    }
+
+    @Test("A drawing has extent in both directions")
+    func aspectRatioRejectsLinesOfWriting() throws {
+        let squareish = try scan(.init(lines: ["Circuit"], includeDiagram: true))
+        for rect in squareish {
+            let aspect = max(rect.width / rect.height, rect.height / rect.width)
+            #expect(aspect <= 3, "a real diagram should not be a sliver: \(rect)")
+        }
+    }
+}

@@ -91,6 +91,17 @@ public struct InkstoneConfig: Codable, Sendable {
     /// Filters out ink specks, crossed-out words and stray underlines.
     public var minDiagramAreaFraction: Double
 
+    /// Smallest share of the page one unbroken stroke must span for a region to
+    /// count as a drawing rather than as handwriting the recogniser could not
+    /// read. Raise it to keep only large diagrams; lower it to keep small
+    /// sketches, at the cost of cropping the odd unread word.
+    public var minDiagramStrokeSpan: Double
+
+    /// Widest width:height ratio a crop may have. A drawing has extent in both
+    /// directions; a line of writing does not. Raise it if you draw wide things
+    /// like number lines or timelines.
+    public var maxDiagramAspectRatio: Double
+
     /// Padding in pixels added around a detected diagram before cropping.
     public var diagramCropPadding: Int
 
@@ -149,6 +160,8 @@ public struct InkstoneConfig: Codable, Sendable {
         apiKeyEnvVar: nil,
         apiKeyFile: nil,
         minDiagramAreaFraction: 0.01,
+        minDiagramStrokeSpan: 0.12,
+        maxDiagramAspectRatio: 3,
         diagramCropPadding: 12,
         diagramExtractionEnabled: true,
         notebookRouting: [:],

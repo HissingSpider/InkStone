@@ -14,6 +14,9 @@ enum Fixtures {
         var lines: [String] = []
         /// Draw a boxed sketch in the lower half of the page.
         var includeDiagram = false
+        /// Draw a cluster of short strokes — the shape unread handwriting makes.
+        /// Each is small relative to the page, as a written glyph is.
+        var includeShortMarks = false
     }
 
     static let pageSize = CGSize(width: 612, height: 792)
@@ -51,6 +54,22 @@ enum Fixtures {
                 ? String(line.dropFirst()).trimmingCharacters(in: .whitespaces) : line
             drawText(text, at: CGPoint(x: 72, y: y), size: size, in: context)
             y -= size * 1.9
+        }
+
+        if page.includeShortMarks {
+            context.setStrokeColor(gray: 0, alpha: 1)
+            context.setLineWidth(4)
+            // Small isolated blobs, spread over a wide area. Vision does not
+            // read them as text, so nothing is subtracted and they reach the
+            // filter exactly as unrecognised handwriting would — many small
+            // components covering a large region.
+            for row in 0..<4 {
+                for column in 0..<10 {
+                    let x = 120 + CGFloat(column) * 36
+                    let y = 300 - CGFloat(row) * 34
+                    context.strokeEllipse(in: CGRect(x: x, y: y, width: 13, height: 13))
+                }
+            }
         }
 
         guard page.includeDiagram else { return }

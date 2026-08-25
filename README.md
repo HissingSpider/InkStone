@@ -114,6 +114,15 @@ level, a vertical gap becomes a paragraph break.
 
 Diagrams are embedded where they sat on the page, not collected at the bottom.
 
+Only actual drawings are extracted. Handwriting the recogniser could not read
+looks identical to a diagram after text subtraction — it is ink with no text over
+it — so it used to be cropped and embedded, and then read correctly by the cloud
+model anyway, leaving the same content in the note twice: once as prose, once as
+a picture of that prose. Two measurements separate them. A drawn mark is long: an
+axis or an arrow spans a fifth of the page or more, while a written glyph spans a
+few percent however large the cluster. And a drawing has extent in both
+directions, where writing runs along one.
+
 ---
 
 ## What a note looks like
@@ -355,6 +364,8 @@ to defaults, so a config written by an older version keeps working.
 | `apiKeyFile` | `~/.config/inkstone/credentials` | Read when the env var is unset — this is what makes unattended runs work |
 | `diagramExtractionEnabled` | `true` | Crop drawings out as PNGs |
 | `minDiagramAreaFraction` | `0.01` | Share of a page a drawing must cover |
+| `minDiagramStrokeSpan` | `0.12` | Share of the page one unbroken stroke must span |
+| `maxDiagramAspectRatio` | `3` | Widest a crop may be; raise it if you draw number lines |
 | `diagramCropPadding` | `12` | Pixels of breathing room around a crop |
 | `notebookRouting` | `{}` | `{"Physics 201": "Courses/Physics"}` — matches notebook *and* section names, prefix match |
 | `showPageNumbers` | `false` | Emit `## Page N` headings |
