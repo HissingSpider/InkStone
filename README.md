@@ -362,6 +362,15 @@ GROUP BY category
 ```
 ````
 
+**Corrections stick even when the recogniser changes its mind.** A heading it can
+barely read comes out spelled differently on each run — "Vector upending" one
+time, "Vector uperting" the next — so `sectionAliases` matches approximately as
+well as exactly. Without that, a correction works once and then silently stops,
+stranding the note under a new name and breaking every link into it.
+
+Renaming a section does leave the old note behind: Inkstone never deletes from
+your vault. Delete orphans yourself when you rename something.
+
 A caveat worth knowing: section names come from OCR. If Vision misreads a
 heading you get a note called `Vector operating` instead of `Vector
 operations`. Cloud escalation fixes the headings along with everything else.

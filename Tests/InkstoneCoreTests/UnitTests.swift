@@ -554,6 +554,18 @@ struct VLMTests {
         #expect(prompt.contains("<draft>"))
     }
 
+    @Test("Writing inside a diagram is asked for as text, but not a description of it")
+    func promptAsksForTextInsideDiagrams() {
+        let prompt = VLMPrompt.user(pageNumber: 1, notebook: "Calculus",
+                                    hasDiagrams: 1, visionDraft: nil)
+        // A note that is only an image is not findable by its contents, which
+        // is the whole point of transcribing.
+        #expect(prompt.contains("labels, formulas"))
+        #expect(prompt.contains("Do not describe the drawing itself"))
+        // And the guard against the same phrase landing twice.
+        #expect(prompt.contains("exactly once"))
+    }
+
     @Test func promptOmitsDiagramSectionWhenThereAreNone() {
         let prompt = VLMPrompt.user(pageNumber: 1, notebook: "N", hasDiagrams: 0, visionDraft: nil)
         #expect(!prompt.contains(NoteComposer.diagramPlaceholder))
@@ -1602,5 +1614,61 @@ struct NoteAliasTests {
     @Test("Notes without an alias entry gain no aliases key")
     func noAliasesByDefault() {
         #expect(compose("## Scaling vectors\n\nbody")[0].frontmatter["aliases"] == nil)
+    }
+}
+
+@Suite("Fuzzy alias matching")
+struct FuzzyMatchTests {
+
+    @Test("The same illegible heading, read twice, still matches its correction")
+    func matchesObservedMisreadings() {
+        // Every one of these pairs came from consecutive runs over the same page.
+        #expect(FuzzyMatch.matches("Vector upending", "Vector uperting"))
+        #expect(FuzzyMatch.matches("Anna Only", "Annual only"))
+        #expect(FuzzyMatch.matches("Parallel Vectors", "Parallel vectors"))
+    }
+
+    @Test("Genuinely different titles do not collapse together")
+    func doesNotOverMatch() {
+        #expect(!FuzzyMatch.matches("Adding 2 vectors", "Scaling vectors"))
+        #expect(!FuzzyMatch.matches("Economics", "Mechanics"))
+        // Short strings are held to exact matching: one letter is the whole
+        // difference between them.
+        #expect(!FuzzyMatch.matches("add", "odd"))
+        #expect(!FuzzyMatch.matches("i", "j"))
+    }
+
+    @Test func normalisationIgnoresCaseSpacingAndPunctuation() {
+        #expect(FuzzyMatch.normalise("  Vector  Operations. ") == "vector operations")
+        #expect(FuzzyMatch.matches("Vector Operations", "vector operations!"))
+    }
+
+    @Test func distanceIsCorrect() {
+        #expect(FuzzyMatch.distance("kitten", "sitting") == 3)
+        #expect(FuzzyMatch.distance("", "abc") == 3)
+        #expect(FuzzyMatch.distance("same", "same") == 0)
+    }
+
+    @Test("A correction survives the recogniser changing its mind")
+    func aliasesStickAcrossRuns() {
+        var config = InkstoneConfig.default
+        config.sectionAliases = ["Vector upending": "Vector Notations"]
+        let composer = NoteComposer(config: config, granularity: .section)
+
+        // The spelling the alias was written for.
+        #expect(composer.alias(for: "Vector upending") == "Vector Notations")
+        // And the spelling the next run produced.
+        #expect(composer.alias(for: "Vector uperting") == "Vector Notations")
+        // But not an unrelated heading.
+        #expect(composer.alias(for: "Scaling vectors") == nil)
+    }
+
+    @Test("The closest alias wins when several are near")
+    func picksTheNearestAlias() {
+        var config = InkstoneConfig.default
+        config.sectionAliases = ["Vector upending": "A", "Vector operations": "B"]
+        let composer = NoteComposer(config: config, granularity: .section)
+        #expect(composer.alias(for: "Vector uperting") == "A")
+        #expect(composer.alias(for: "Vector operatons") == "B")
     }
 }

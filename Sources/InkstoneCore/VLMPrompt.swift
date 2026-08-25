@@ -59,10 +59,23 @@ public enum VLMPrompt {
             sections.append("""
                 This page has \(hasDiagrams) diagram\(hasDiagrams == 1 ? "" : "s") \
                 (drawings, charts, sketches) that have already been cropped out as images.
-                Do not attempt to describe or redraw them. Instead, write the exact token \
-                `\(NoteComposer.diagramPlaceholder)` on its own line at each point in the \
-                text where a diagram appears, top to bottom. Emit exactly \(hasDiagrams) \
-                of them.
+
+                Write the exact token `\(NoteComposer.diagramPlaceholder)` on its own line \
+                at each point in the text where a diagram appears, top to bottom. Emit \
+                exactly \(hasDiagrams) of them.
+
+                Do transcribe any writing that sits inside a diagram — labels, formulas, \
+                numbers, axis names, marginal annotations. It is part of the notes, and a \
+                reader searching for it needs it as text and not only as pixels. Put that \
+                writing on the lines immediately after that diagram's token.
+
+                Do not describe the drawing itself. Never write "an arrow points to" or \
+                "a graph showing a curve". Transcribe the words; leave the shapes to the \
+                image.
+
+                Transcribe every piece of writing exactly once. Where a phrase sits at the \
+                edge of a diagram, decide whether it belongs to the diagram or to the text \
+                around it, and put it in one place only.
                 """)
         }
 

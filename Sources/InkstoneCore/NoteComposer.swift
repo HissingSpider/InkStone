@@ -346,12 +346,21 @@ public struct NoteComposer: Sendable {
     /// Matching ignores case and surrounding whitespace, because the thing being
     /// corrected is by definition unreliable text.
     func alias(for title: String) -> String? {
-        let needle = title.lowercased().trimmingCharacters(in: .whitespaces)
+        // Exact first, so an explicit rule always wins outright.
         for (wrong, right) in config.sectionAliases
-        where wrong.lowercased().trimmingCharacters(in: .whitespaces) == needle {
+        where FuzzyMatch.normalise(wrong) == FuzzyMatch.normalise(title) {
             return right
         }
-        return nil
+        // Then approximately, because the text being corrected is by definition
+        // unreliable and comes out spelled differently on each run.
+        let near = config.sectionAliases
+            .filter { FuzzyMatch.matches($0.key, title) }
+            .min { FuzzyMatch.distance(FuzzyMatch.normalise($0.key), FuzzyMatch.normalise(title))
+                 < FuzzyMatch.distance(FuzzyMatch.normalise($1.key), FuzzyMatch.normalise(title)) }
+        if let near {
+            log.debug("section \"\(title)\" matched alias \"\(near.key)\" → \(near.value)")
+        }
+        return near?.value
     }
 
     /// Ensures each note in a run gets its own path, since a notebook can
