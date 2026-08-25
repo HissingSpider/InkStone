@@ -289,6 +289,9 @@ public struct NoteComposer: Sendable {
             "tags": .list(config.defaultTags + (isCategory ? [Self.slug(title)] : [])),
         ]
         if isCategory { frontmatter["category"] = .string(title) }
+        if let aliases = aliasNames(for: title), !aliases.isEmpty {
+            frontmatter["aliases"] = .list(aliases)
+        }
         if needsReview { frontmatter["needs_review"] = .bool(true) }
         frontmatter["updated"] = .date(now)
 
@@ -321,6 +324,16 @@ public struct NoteComposer: Sendable {
         while let last = lines.last, last.trimmingCharacters(in: .whitespaces) == "---"
             || last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
         return lines.joined(separator: "\n")
+    }
+
+    /// Extra names this note should answer to, matched case-insensitively.
+    func aliasNames(for title: String) -> [String]? {
+        let needle = title.lowercased().trimmingCharacters(in: .whitespaces)
+        for (name, aliases) in config.noteAliases
+        where name.lowercased().trimmingCharacters(in: .whitespaces) == needle {
+            return aliases
+        }
+        return nil
     }
 
     /// Mean gate score across the pages that had content on them.

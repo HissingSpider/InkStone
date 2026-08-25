@@ -1563,3 +1563,44 @@ struct DemotedHeadingTests {
         #expect(notes.map(\.title) == ["Real Topic"])
     }
 }
+
+@Suite("Note aliases")
+struct NoteAliasTests {
+
+    private var config: InkstoneConfig {
+        var config = InkstoneConfig.default
+        config.notesSubfolder = "Inkstone"
+        // The page is headed "Computing length"; the user's own notes link to it
+        // as [[magnitude]]. An alias resolves that without renaming the note to
+        // something the page does not say.
+        config.noteAliases = ["Computing length": ["magnitude"]]
+        return config
+    }
+
+    private func compose(_ markdown: String) -> [ComposedNote] {
+        NoteComposer(config: config, granularity: .section).compose(
+            notebook: "Calculus", sourceURL: URL(fileURLWithPath: "/tmp/Calculus.pdf"),
+            pages: [PageOutput(pageIndex: 0, markdown: markdown, confidence: 1, source: .vlm)])
+    }
+
+    @Test("An alias is emitted as Obsidian frontmatter, and the title is untouched")
+    func aliasesReachFrontmatter() {
+        let notes = compose("## Computing length\n\nthe formula")
+        #expect(notes[0].title == "Computing length")
+        #expect(notes[0].frontmatter["aliases"] == .list(["magnitude"]))
+        #expect(notes[0].contents.contains("aliases: [magnitude]"))
+    }
+
+    @Test("Matching ignores case and stray whitespace")
+    func aliasMatchingIsForgiving() {
+        let composer = NoteComposer(config: config, granularity: .section)
+        #expect(composer.aliasNames(for: "computing length") == ["magnitude"])
+        #expect(composer.aliasNames(for: "  Computing Length ") == ["magnitude"])
+        #expect(composer.aliasNames(for: "Scaling vectors") == nil)
+    }
+
+    @Test("Notes without an alias entry gain no aliases key")
+    func noAliasesByDefault() {
+        #expect(compose("## Scaling vectors\n\nbody")[0].frontmatter["aliases"] == nil)
+    }
+}

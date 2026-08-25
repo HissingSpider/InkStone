@@ -20,7 +20,7 @@ public enum Frontmatter {
     /// Key order in the emitted block. Anything unlisted follows, sorted, so a
     /// new field never silently reorders an existing note and makes a spurious
     /// diff in the user's vault history.
-    static let keyOrder = ["category", "notebook", "needs_review", "updated", "tags"]
+    static let keyOrder = ["category", "aliases", "notebook", "needs_review", "updated", "tags"]
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()

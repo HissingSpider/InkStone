@@ -156,6 +156,14 @@ note to itself. Titles shorter than four characters are skipped, or a note calle
 
 Turn it off with `"crossLink": false`.
 
+If you already link to a topic by a different name than the page heading uses,
+`noteAliases` emits Obsidian `aliases` frontmatter so the link resolves without
+renaming the note to something the page does not say:
+
+```json
+{ "noteAliases": { "Computing length": ["magnitude"] } }
+```
+
 **One thing to watch:** if a generated note has the same name as one of yours,
 `[[Vectors]]` becomes ambiguous and Obsidian picks for you. Either rename one, or
 route the generated notes elsewhere with `notebookRouting`.
@@ -395,6 +403,7 @@ to defaults, so a config written by an older version keeps working.
 | `crossLink` | `true` | Link first mentions of other notes as `[[Wikilinks]]` |
 | `defaultTags` | `["inkstone", "handwritten"]` | Added to every note |
 | `sectionAliases` | `{}` | Fix OCR'd section names: `{"Workinet": "Worksheet"}` |
+| `noteAliases` | `{}` | Extra names a note answers to: `{"Computing length": ["magnitude"]}` |
 
 ---
 

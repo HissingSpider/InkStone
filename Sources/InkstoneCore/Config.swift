@@ -157,6 +157,14 @@ public struct InkstoneConfig: Codable, Sendable {
     /// page every time. Correcting the name here fixes it at the source.
     public var sectionAliases: [String: String]
 
+    /// Extra names a note should answer to, as Obsidian `aliases` frontmatter:
+    /// `{"Computing length": ["magnitude"]}`.
+    ///
+    /// This is how a `[[link]]` you already write resolves to a note whose page
+    /// heading says something else, without renaming the note to something the
+    /// page does not say.
+    public var noteAliases: [String: [String]]
+
     /// Regular expressions matched against each transcribed line; anything that
     /// matches is dropped. Defaults to the GoodNotes free-tier watermark, which
     /// otherwise lands on every page of every note. Matching is case-insensitive
@@ -193,6 +201,7 @@ public struct InkstoneConfig: Codable, Sendable {
         crossLink: true,
         defaultTags: ["inkstone", "handwritten"],
         sectionAliases: [:],
+        noteAliases: [:],
         ignoreLinePatterns: [#"^\s*m[a2o]d[eo]\s+w[il]th\s+g[o0]{2}dn[o0]tes\s*$"#]
     )
 }
