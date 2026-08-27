@@ -104,7 +104,8 @@ func commandRun() async throws {
 }
 
 func commandWatch() async throws {
-    let (config, _) = try loadConfig()
+    let (initial, configURL) = try loadConfig()
+    let configs = ConfigSource(url: configURL, initial: initial)
     let state = try StateStore()
     log.attachFile()
 
@@ -119,7 +120,7 @@ func commandWatch() async throws {
     var complainedAbout: String?
     while true {
         do {
-            try Pipeline.checkInboxAccess(config.inboxURL)
+            try Pipeline.checkInboxAccess(await configs.current().inboxURL)
             if complainedAbout != nil { log.info("inbox is readable again; resuming") }
             break
         } catch {
@@ -137,19 +138,33 @@ func commandWatch() async throws {
 
     // A resident process must not fall behind while it was not running, so do a
     // full pass on startup before settling into event-driven mode.
-    let startup = Pipeline(config: config, state: state, options: makeOptions(config))
+    let startupConfig = await configs.current()
+    let startup = Pipeline(
+        config: startupConfig, state: state, options: makeOptions(startupConfig))
     _ = await startup.run()
 
     let quiet = Double(arguments.int("settle") ?? 20)
     let running = RunGate()
+    let watched = startupConfig.inboxURL
 
-    let watcher = FolderWatcher(paths: [config.inboxURL], quietPeriod: quiet) { changed in
+    let watcher = FolderWatcher(paths: [watched], quietPeriod: quiet) { changed in
         Task {
             guard await running.begin() else {
                 log.info("a run is already in flight; the change will be picked up next pass")
                 return
             }
             defer { Task { await running.end() } }
+            let config = await configs.current()
+
+            // The event stream is bound to one folder for the life of the
+            // stream, so a moved inbox cannot be followed from in here. Exit
+            // non-zero and let launchd's KeepAlive bring the watcher back
+            // pointed at the new one.
+            guard config.inboxURL == watched else {
+                log.info("inbox moved to \(config.inboxURL.path); restarting to watch it")
+                exit(1)
+            }
+
             var options = makeOptions(config)
             options.only = changed
             _ = await Pipeline(config: config, state: state, options: options).run()
@@ -168,6 +183,58 @@ func commandWatch() async throws {
     // run loop here — only for this task never to finish.
     while !Task.isCancelled {
         try await Task.sleep(nanoseconds: 3_600 * 1_000_000_000)
+    }
+}
+
+/// Supplies the config to a resident process, re-reading it when it changes.
+///
+/// The watcher stays up for weeks at a time. Reading the config once at launch
+/// meant that editing it — adding a sectionAlias, a routing rule — changed
+/// nothing until somebody remembered to restart the agent, and the only symptom
+/// was notes that came out named the way they were before the edit. No error, no
+/// warning, and a hand-run `inkstone run` behaved correctly because the CLI
+/// reads the file fresh every time, which made the difference look like magic.
+actor ConfigSource {
+    private let url: URL
+    private var config: InkstoneConfig
+    private var stamp: Date?
+    private var complainedAbout: String?
+
+    init(url: URL, initial: InkstoneConfig) {
+        self.url = url
+        self.config = initial
+        self.stamp = Self.modified(at: url)
+    }
+
+    /// The config as it stands on disk, or the last one that parsed.
+    ///
+    /// A file that will not parse is survivable and must not take the daemon
+    /// down: an editor writing a save in two steps, or a half-finished edit left
+    /// overnight, would otherwise stop transcription until someone noticed. The
+    /// stamp is deliberately not advanced on failure, so repairing the file is
+    /// enough to recover on the next run without restarting anything.
+    func current() -> InkstoneConfig {
+        let modified = Self.modified(at: url)
+        guard modified != stamp else { return config }
+        do {
+            config = try InkstoneConfig.load(from: url)
+            stamp = modified
+            complainedAbout = nil
+            log.info("reloaded \(url.path)")
+        } catch {
+            let message = "\(error)"
+            if complainedAbout != message {
+                log.error("\(url.lastPathComponent) will not parse, keeping the settings "
+                          + "already loaded: \(message)")
+                complainedAbout = message
+            }
+        }
+        return config
+    }
+
+    private static func modified(at url: URL) -> Date? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes?[.modificationDate] as? Date
     }
 }
 

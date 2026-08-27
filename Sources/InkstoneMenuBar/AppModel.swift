@@ -57,9 +57,19 @@ final class AppModel: ObservableObject {
         isRunning = true
         lastMessage = "Running…"
 
+        // Re-read rather than trust what was loaded at launch. This process
+        // stays up for weeks, and the Config… item hands the user the file to
+        // edit, so editing it and then pressing Process now is the expected
+        // order of events rather than an unusual one.
+        if let fresh = try? InkstoneConfig.load() { config = fresh }
+
         let config = self.config
         var options = PipelineOptions()
         options.reprocessAll = force
+        // Without this the button runs at the default granularity while every
+        // other entry point runs at the configured one, quietly producing a
+        // second set of notes alongside the first.
+        options.granularity = config.resolvedGranularity
 
         Task.detached(priority: .utility) {
             let result = await Pipeline(config: config, state: state, options: options).run()
