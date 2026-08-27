@@ -41,6 +41,14 @@ public struct PageRecord: Sendable, Equatable {
     }
 }
 
+/// A document Inkstone has already seen, as the state store remembers it.
+public struct DocumentRecord: Sendable, Equatable {
+    public var path: String
+    public var baseName: String
+    public var fileHash: String
+    public var pageCount: Int
+}
+
 /// A note Inkstone wrote, plus the hash of exactly what it wrote.
 ///
 /// The stored hash is the whole edit-protection mechanism: if the file on disk
@@ -259,6 +267,18 @@ public final class StateStore: @unchecked Sendable {
         }
     }
 
+    /// Runs `body` inside a transaction, rolling back if it throws.
+    private func transaction(_ body: () throws -> Void) throws {
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try body()
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
     private static func text(_ statement: OpaquePointer, _ column: Int32) -> String {
         guard let c = sqlite3_column_text(statement, column) else { return "" }
         return String(cString: c)
@@ -290,6 +310,58 @@ public final class StateStore: @unchecked Sendable {
     public func documentHash(path: String) throws -> String? {
         try prepared("SELECT file_hash FROM documents WHERE path = ?;", [path]) { statement in
             sqlite3_step(statement) == SQLITE_ROW ? Self.text(statement, 0) : nil
+        }
+    }
+
+    /// Every document the store knows about.
+    public func documents() throws -> [DocumentRecord] {
+        try prepared("SELECT path, base_name, file_hash, page_count FROM documents;") {
+            statement -> [DocumentRecord] in
+            var rows: [DocumentRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                rows.append(DocumentRecord(
+                    path: Self.text(statement, 0),
+                    baseName: Self.text(statement, 1),
+                    fileHash: Self.text(statement, 2),
+                    pageCount: Int(sqlite3_column_int64(statement, 3))))
+            }
+            return rows
+        }
+    }
+
+    /// The page bitmap hashes cached for `documentPath`.
+    ///
+    /// Used to recognise a notebook that came back under a different filename:
+    /// the bytes of the PDF change when a page is added, but the pages that were
+    /// already there still render to exactly the same bitmaps.
+    public func pageHashes(documentPath: String) throws -> Set<String> {
+        try prepared("SELECT image_hash FROM pages WHERE document_path = ?;", [documentPath]) {
+            statement -> Set<String> in
+            var hashes: Set<String> = []
+            while sqlite3_step(statement) == SQLITE_ROW { hashes.insert(Self.text(statement, 0)) }
+            return hashes
+        }
+    }
+
+    /// Moves a document and its cached pages to a new path.
+    ///
+    /// This is what makes renaming a notebook free. Both tables key on the file
+    /// path, so without this a rename reads as a notebook nobody has ever seen:
+    /// every page misses the cache and is transcribed again, which for an
+    /// escalating setup means paying a vision model to re-read pages it already
+    /// read.
+    public func repathDocument(from oldPath: String, to newPath: String, baseName: String) throws {
+        guard oldPath != newPath else { return }
+        try transaction {
+            // Defensive: the caller only adopts documents it has never seen, so
+            // there should be nothing at the destination to collide with the
+            // primary key.
+            try run("DELETE FROM pages WHERE document_path = ?;", [newPath])
+            try run("DELETE FROM documents WHERE path = ?;", [newPath])
+            try run("UPDATE pages SET document_path = ? WHERE document_path = ?;",
+                    [newPath, oldPath])
+            try run("UPDATE documents SET path = ?, base_name = ? WHERE path = ?;",
+                    [newPath, baseName, oldPath])
         }
     }
 

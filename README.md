@@ -202,6 +202,23 @@ An empty destination means the vault root. Merge the transcription into your not
 however you like, add `inkstone_lock: true`, and Inkstone will leave it alone
 from then on and will not recreate a duplicate elsewhere.
 
+## Renaming a notebook
+
+A notebook is identified by what is inside it, not by what it is called. Rename
+`Calculus` to `Fall 26` in GoodNotes and the next run recognises it, carries the
+page cache across, and transcribes only the pages you have written since. It
+does not pay to read the whole notebook again under its new name.
+
+Identity is settled by the page images, so this still holds on the run that
+brings a new name *and* new writing — which is how a rename is usually noticed,
+since the backup that renames the file is generally the one that adds pages to
+it. A copy is not a rename: if the original is still sitting in the inbox, the
+new file is treated as a second notebook on its own account.
+
+Notes already written under the old name stay where they are. Inkstone never
+deletes a note, so the old notebook's folder is left for you to clear out or
+keep.
+
 ---
 
 ## When Vision is not good enough

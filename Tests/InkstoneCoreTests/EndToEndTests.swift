@@ -753,3 +753,151 @@ struct CachedRefusalTests {
         #expect(!note.contains("unable to transcribe"), "\(note)")
     }
 }
+
+/// A notebook renamed in the handwriting app is the same notebook.
+///
+/// Both state tables key on the file path, so before rename detection existed a
+/// rename read as a notebook nobody had ever seen: every page missed the cache
+/// and was transcribed again, which on an escalating setup meant paying a vision
+/// model to re-read pages it had already read.
+@Suite("Renamed notebooks", .serialized)
+struct RenameTests {
+
+    private func withWorkspace(
+        _ body: (InkstoneConfig, StateStore, URL) async throws -> Void
+    ) async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("inkstone-rename-\(UUID().uuidString)")
+        let inbox = root.appendingPathComponent("Inbox")
+        let vault = root.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: vault.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = InkstoneConfig.default
+        config.inboxPath = inbox.path
+        config.vaultPath = vault.path
+        config.notesSubfolder = "Inkstone"
+        config.attachmentsSubfolder = "Inkstone/attachments"
+        config.renderDPI = 200
+        config.cloudEscalationEnabled = false
+
+        let state = try StateStore(url: root.appendingPathComponent("state.sqlite3"))
+        try await body(config, state, inbox)
+    }
+
+    private let firstTwoPages: [Fixtures.PageSpec] = [
+        .init(lines: ["#Vectors", "an ordered tuple of numbers"]),
+        .init(lines: ["#Adding 2 vectors", "add them entrywise"]),
+    ]
+
+    @Test("A pure rename costs nothing")
+    func pureRenameReusesEveryPage() async throws {
+        try await withWorkspace { config, state, inbox in
+            let old = inbox.appendingPathComponent("Calculus.pdf")
+            try Fixtures.makePDF(at: old, title: "Calculus", pages: firstTwoPages)
+
+            let first = await Pipeline(config: config, state: state).run()
+            #expect(first.errors.isEmpty, "\(first.errors)")
+            #expect(first.pagesProcessed == 2)
+
+            // The same bytes under a different name.
+            let new = inbox.appendingPathComponent("Fall 26.pdf")
+            try FileManager.default.moveItem(at: old, to: new)
+
+            let second = await Pipeline(config: config, state: state).run()
+            #expect(second.errors.isEmpty, "\(second.errors)")
+            #expect(second.pagesProcessed == 0, "a rename must not re-transcribe anything")
+            #expect(second.pagesCached == 2)
+
+            // And the cache moved with it, rather than being left behind under a
+            // path that no longer exists.
+            #expect(try state.documentHash(path: new.path) != nil)
+            #expect(try state.documentHash(path: old.path) == nil)
+            #expect(try state.pageHashes(documentPath: old.path).isEmpty)
+        }
+    }
+
+    @Test("A rename noticed alongside new writing still reuses the old pages")
+    func renameWithAnAddedPageOnlyTranscribesTheNewPage() async throws {
+        try await withWorkspace { config, state, inbox in
+            let old = inbox.appendingPathComponent("Calculus.pdf")
+            try Fixtures.makePDF(at: old, title: "Calculus", pages: firstTwoPages)
+
+            let first = await Pipeline(config: config, state: state).run()
+            #expect(first.errors.isEmpty, "\(first.errors)")
+            #expect(first.pagesProcessed == 2)
+
+            // The realistic case: the rename is noticed on the run that also
+            // carries the pages written since the last backup, so the file hash
+            // cannot match and only the page bitmaps can settle identity.
+            try FileManager.default.removeItem(at: old)
+            let new = inbox.appendingPathComponent("Fall 26.pdf")
+            try Fixtures.makePDF(
+                at: new, title: "Fall 26",
+                pages: firstTwoPages + [.init(lines: ["#UFO Notes", "really just unidentified"])])
+
+            let second = await Pipeline(config: config, state: state).run()
+            #expect(second.errors.isEmpty, "\(second.errors)")
+            #expect(second.pagesProcessed == 1, "only the page that is actually new")
+            #expect(second.pagesCached == 2)
+        }
+    }
+
+    @Test("A copy is not a rename")
+    func aDuplicateLeavesTheOriginalAlone() async throws {
+        try await withWorkspace { config, state, inbox in
+            let original = inbox.appendingPathComponent("Calculus.pdf")
+            try Fixtures.makePDF(at: original, title: "Calculus", pages: firstTwoPages)
+
+            _ = await Pipeline(config: config, state: state).run()
+
+            // Same bytes, but the original is still there — this is a second
+            // notebook, not a moved one, and adopting its cache would leave the
+            // original's page rows pointing at the copy.
+            let copy = inbox.appendingPathComponent("Calculus copy.pdf")
+            try FileManager.default.copyItem(at: original, to: copy)
+
+            let second = await Pipeline(config: config, state: state).run()
+            #expect(second.errors.isEmpty, "\(second.errors)")
+            #expect(second.pagesProcessed == 2, "the copy is transcribed on its own account")
+            #expect(try state.documentHash(path: original.path) != nil)
+            #expect(try state.pageHashes(documentPath: original.path).count == 2)
+        }
+    }
+}
+
+@Suite("State store rename support")
+struct RepathTests {
+
+    @Test func repathMovesTheDocumentAndItsPages() throws {
+        try Fixtures.withTemporaryDirectory { directory in
+            let state = try StateStore(url: directory.appendingPathComponent("state.sqlite3"))
+            try state.recordDocument(
+                path: "/inbox/Old.pdf", baseName: "Old", fileHash: "hash", pageCount: 2)
+            for index in 0..<2 {
+                try state.upsertPage(PageRecord(
+                    documentPath: "/inbox/Old.pdf", pageIndex: index,
+                    imageHash: "page-\(index)", confidence: 1, escalated: false,
+                    markdown: "page \(index)", diagrams: [], transcribedAt: Date()))
+            }
+
+            try state.repathDocument(
+                from: "/inbox/Old.pdf", to: "/inbox/New.pdf", baseName: "New")
+
+            #expect(try state.documentHash(path: "/inbox/Old.pdf") == nil)
+            #expect(try state.documentHash(path: "/inbox/New.pdf") == "hash")
+            #expect(try state.pageHashes(documentPath: "/inbox/Old.pdf").isEmpty)
+            #expect(try state.pageHashes(documentPath: "/inbox/New.pdf") == ["page-0", "page-1"])
+
+            let moved = try #require(
+                try state.pageRecord(documentPath: "/inbox/New.pdf", pageIndex: 1))
+            #expect(moved.markdown == "page 1")
+
+            let document = try #require(try state.documents().first)
+            #expect(document.baseName == "New")
+            #expect(document.pageCount == 2)
+        }
+    }
+}

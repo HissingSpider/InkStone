@@ -205,13 +205,36 @@ public final class Pipeline: @unchecked Sendable {
         let slug = NoteComposer.slug(notebook)
         log.info("\(notebook): \(renderer.pageCount) page(s)")
 
+        // Every page is fingerprinted anyway, so doing it up front costs
+        // nothing and lets a rename be spotted before the first page is
+        // transcribed rather than after all of them have been.
+        let fingerprints = try (0..<renderer.pageCount).map {
+            try renderer.fingerprint(pageIndex: $0)
+        }
+
+        // A notebook renamed in the handwriting app arrives as a path nobody has
+        // seen, so look for the document it used to be before writing it off as
+        // new. On a dry run the old path stays the cache key, since claiming the
+        // rename would be a write.
+        var cacheKey = path
+        if !options.reprocessAll, try state.documentHash(path: path) == nil,
+           let previous = try predecessor(of: path, fileHash: fileHash, pages: fingerprints) {
+            log.info("\(url.lastPathComponent) is \(previous.baseName) renamed — "
+                     + "reusing its page cache")
+            cacheKey = previous.path
+            if !options.dryRun {
+                try state.repathDocument(from: previous.path, to: path, baseName: notebook)
+                cacheKey = path
+            }
+        }
+
         var pages: [PageOutput] = []
 
         for index in 0..<renderer.pageCount {
-            let fingerprint = try renderer.fingerprint(pageIndex: index)
+            let fingerprint = fingerprints[index]
 
             if !options.reprocessAll,
-               let cached = try state.pageRecord(documentPath: path, pageIndex: index),
+               let cached = try state.pageRecord(documentPath: cacheKey, pageIndex: index),
                cached.imageHash == fingerprint {
                 result.pagesCached += 1
                 // Also checked on the way out of the cache, not just on the way
@@ -261,6 +284,41 @@ public final class Pipeline: @unchecked Sendable {
                                      fileHash: fileHash, pageCount: renderer.pageCount)
         }
         return notes
+    }
+
+    /// The document `path` appears to be a renamed copy of, if there is one.
+    ///
+    /// Identity is content, not filename. An exact file hash settles it outright
+    /// — that is a pure rename. Otherwise the page bitmaps decide: a notebook
+    /// that gained a page since the last backup has different bytes but the same
+    /// pages underneath, which is the ordinary case, because the rename is
+    /// usually noticed on the run that also carries new writing.
+    ///
+    /// Two guards keep this from adopting the wrong notebook. The predecessor's
+    /// own file must be gone from disk, so a copy of a notebook is never
+    /// mistaken for a move of it. And a partial match needs more than one shared
+    /// page, because the near-blank first page GoodNotes puts in every export
+    /// renders to the same bitmap in all of them.
+    private func predecessor(
+        of path: String, fileHash: String, pages fingerprints: [String]
+    ) throws -> DocumentRecord? {
+        let candidates = try state.documents().filter {
+            $0.path != path && !FileManager.default.fileExists(atPath: $0.path)
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        if let renamed = candidates.first(where: { $0.fileHash == fileHash }) { return renamed }
+
+        let current = Set(fingerprints)
+        var best: (document: DocumentRecord, shared: Int)?
+        for candidate in candidates {
+            let shared = try state.pageHashes(documentPath: candidate.path)
+                .intersection(current).count
+            let smaller = min(fingerprints.count, max(candidate.pageCount, 1))
+            guard shared >= 2, Double(shared) >= 0.5 * Double(smaller) else { continue }
+            if shared > (best?.shared ?? 0) { best = (candidate, shared) }
+        }
+        return best?.document
     }
 
     /// Repairs missing attachment files for an otherwise cached page.
